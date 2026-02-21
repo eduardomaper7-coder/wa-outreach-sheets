@@ -2,5 +2,15 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "googleapis": "^171.4.0",
+    "node-cron": "^4.2.1",
+    "twilio": "^5.12.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
