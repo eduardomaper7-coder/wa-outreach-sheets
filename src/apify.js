@@ -29,7 +29,7 @@ async function scrapeZone(zone) {
     zone,                // <- tu actor debe usar esto
     maxItems: 200,       // ejemplo
     language: "es",
-    countryCode: "ES",
+    countryCode: "es",
   };
 
   const items = await runActorAndGetItems(input);
