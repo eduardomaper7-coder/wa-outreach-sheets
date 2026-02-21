@@ -26,15 +26,18 @@ async function runActorAndGetItems(input) {
  */
 async function scrapeZone(zone) {
   const input = {
-    zone,                // <- tu actor debe usar esto
-    maxItems: 200,       // ejemplo
+    searchStringsArray: [
+      `clínica dental ${zone} España`,
+      `dentista ${zone} España`,
+      `clinica estética ${zone} España`
+    ],
+    maxItems: 200,
     language: "es",
     countryCode: "es",
   };
 
   const items = await runActorAndGetItems(input);
 
-  // normaliza a nuestro formato
   return items.map((x) => ({
     business_name: x.business_name || x.title || x.name || "",
     zone,
