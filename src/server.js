@@ -101,3 +101,9 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 startEngine();
 
 app.listen(cfg.PORT, () => console.log(`Listening on ${cfg.PORT}`));
+
+app.get("/admin/scrape", async (req, res) => {
+  const { dailyScrape } = require("./engine");
+  await dailyScrape();
+  res.send("scrape ok");
+});
