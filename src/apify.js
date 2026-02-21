@@ -33,19 +33,21 @@ async function scrapeZone(zone) {
     ],
     maxItems: 200,
     language: "es",
-    countryCode: "es",
+    countryCode: "es", // obligatorio en minúsculas
   };
 
   const items = await runActorAndGetItems(input);
 
-  return items.map((x) => ({
-    business_name: x.business_name || x.title || x.name || "",
-    zone,
-    whatsapp_e164: toE164Spain(x.whatsapp || x.phone || x.phoneNumber || x.phone_e164),
-    google_reviews: x.google_reviews ?? x.reviewsCount ?? null,
-    google_rating: x.google_rating ?? x.rating ?? null,
-    source: "apify",
-  })).filter(r => r.business_name && r.whatsapp_e164);
+  return items
+    .map((x) => ({
+      business_name: x.title || "",
+      zone,
+      whatsapp_e164: toE164Spain(x.phone || ""),
+      google_reviews: x.reviewsCount ?? null,
+      google_rating: x.totalScore ?? null,
+      source: x.url || "apify",
+    }))
+    .filter((r) => r.business_name && r.whatsapp_e164);
 }
 
 module.exports = { scrapeZone };
