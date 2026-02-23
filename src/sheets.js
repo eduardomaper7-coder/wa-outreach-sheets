@@ -1,3 +1,4 @@
+// sheets.js
 const { google } = require("googleapis");
 const cfg = require("./config");
 
@@ -60,9 +61,29 @@ async function updateRow(sheetName, rowNumber1Based, rowValues) {
   });
 }
 
-module.exports = { readRange, updateRow, appendRow, appendRows };
-
-async function updateCell(sheetName, rowNumber, colNumber, value) {
-  const columnLetter = String.fromCharCode(64 + colNumber);
-  await updateRow(`${sheetName}!${columnLetter}${rowNumber}:${columnLetter}${rowNumber}`, rowNumber, [value]);
+// ✅ updateCell REAL
+function colToLetter(colNumber1Based) {
+  let n = colNumber1Based;
+  let s = "";
+  while (n > 0) {
+    const mod = (n - 1) % 26;
+    s = String.fromCharCode(65 + mod) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
 }
+
+async function updateCell(sheetName, rowNumber1Based, colNumber1Based, value) {
+  const sheets = await getSheetsClient();
+  const colLetter = colToLetter(colNumber1Based);
+  const range = `${sheetName}!${colLetter}${rowNumber1Based}:${colLetter}${rowNumber1Based}`;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: cfg.SHEETS_SPREADSHEET_ID,
+    range,
+    valueInputOption: "RAW",
+    requestBody: { values: [[value]] },
+  });
+}
+
+module.exports = { readRange, updateRow, appendRow, appendRows, updateCell };

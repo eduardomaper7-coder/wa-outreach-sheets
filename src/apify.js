@@ -79,14 +79,14 @@ async function scrapeZone(zone) {
         google_reviews: x.reviewsCount ?? null,
         google_rating: x.totalScore ?? null,
         website: x.website || "", 
-        email: extractedEmail, // Ya viene procesado por Apify
+        email: String(extractedEmail || "").trim().toLowerCase(),
         source: x.url || "apify",
       };
     })
   );
 
   // Solo devolvemos los que tienen nombre y teléfono válido
-  const filtered = leads.filter(r => r.business_name && r.whatsapp_e164);
+  const filtered = leads.filter(r => r.business_name && (r.whatsapp_e164 || r.email));
   console.log(`[apify] Procesados ${filtered.length} leads para ${zone}.`);
   
   return filtered;

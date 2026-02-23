@@ -73,124 +73,116 @@ function rowFromLeadObj(lead) {
 }
 
 async function upsertLeadByPhone(newLead) {
+  // ✅ Ahora hace UPSERT por TELÉFONO y, si no hay match, por EMAIL.
+  // Mantengo el nombre de la función para que no tengas que cambiar llamadas.
+
   const { rows } = await getLeadsTable();
   const hoy = isoNow();
-  console.log(`[DEBUG] Lead: ${newLead.business_name} | Email detectado: ${newLead.email}`);
 
-  // Limpiamos el teléfono que viene de Apify para la comparación
-  const newPhoneClean = String(newLead.whatsapp_e164 || "").replace(/\D/g, "");
+  const normEmail = (e) => String(e || "").trim().toLowerCase();
+  const cleanPhone = (p) => String(p || "").replace(/\D/g, "");
 
-  // Buscamos si ya existe comparando solo los números
-  const existing = rows.find(r => {
-    const sheetPhoneClean = String(r.whatsapp_e164 || "").replace(/\D/g, "");
-    return sheetPhoneClean === newPhoneClean && sheetPhoneClean !== "";
-  });
+  const newPhoneClean = cleanPhone(newLead.whatsapp_e164);
+  const newEmailNorm = normEmail(newLead.email);
 
-  // --- CASO 1: EL LEAD NO EXISTE (NUEVO) ---
+  console.log(
+    `[DEBUG] Lead: ${newLead.business_name} | Phone=${newLead.whatsapp_e164 || ""} | Email=${newLead.email || ""}`
+  );
+
+  // 1) Match por teléfono
+  let existing = null;
+  if (newPhoneClean) {
+    existing = rows.find((r) => {
+      const sheetPhoneClean = cleanPhone(r.whatsapp_e164);
+      return sheetPhoneClean && sheetPhoneClean === newPhoneClean;
+    });
+  }
+
+  // 2) Si no hay match por teléfono, match por email
+  if (!existing && newEmailNorm && newEmailNorm.includes("@")) {
+    existing = rows.find((r) => normEmail(r.email) === newEmailNorm);
+  }
+
+  // --- CASO 1: NO EXISTE (NUEVO) ---
   if (!existing) {
     const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    const hasEmail = newEmailNorm.includes("@");
+
     const lead = {
       lead_id,
       ...newLead,
-      // WhatsApp: Empieza Hoy (Día 1)
+
+      // WhatsApp flow
       status: "NEW",
       last_outbound_at: "",
-      next_send_at: hoy, 
+      next_send_at: hoy,
       msg1_sid: "",
       msg2_sid: "",
       msg3_sid: "",
-      // Email: Empieza Hoy (Día 1)
+
+      // Global stop
       stop_all: "FALSE",
       stop_reason: "",
-      email_status: "EMAIL_NEW",
+
+      // Email flow (solo si hay email)
+      email: hasEmail ? newEmailNorm : "",
+      email_status: hasEmail ? "EMAIL_NEW" : "",
       email_last_outbound_at: "",
-      email_next_send_at: hoy,
+      email_next_send_at: hasEmail ? hoy : "",
       email1_id: "",
       email2_id: "",
       email3_id: "",
       email_reply_at: "",
     };
 
-    console.log(`[engine] Insertando nuevo lead: ${newLead.business_name}`);
+    console.log(`[engine] Insertando nuevo lead: ${lead.business_name} | email=${lead.email || ""}`);
     await appendRow("Leads", rowFromLeadObj(lead));
     return { action: "insert" };
   }
 
-  // --- CASO 2: EL LEAD YA EXISTE (MATCH POR TELÉFONO) ---
-  
-  // Verificamos si podemos añadir un email que antes no estaba
-  const sheetEmail = String(existing.email || "").trim();
-  const newEmail = String(newLead.email || "").trim();
-  
-  // Se activa si el de la hoja está vacío y el de Apify trae un email válido
-  const shouldUpdateEmail = sheetEmail.length < 5 && newEmail.includes("@");
+  // --- CASO 2: YA EXISTE (MATCH POR TELÉFONO O EMAIL) ---
+  const sheetEmail = normEmail(existing.email);
+  const sheetPhoneClean = cleanPhone(existing.whatsapp_e164);
+
+  const shouldUpdateEmail =
+    (!sheetEmail || sheetEmail.length < 5) && newEmailNorm.includes("@");
+
+  const shouldUpdatePhone =
+    (!sheetPhoneClean || sheetPhoneClean.length < 6) && newPhoneClean.length >= 9;
 
   const merged = {
     ...existing,
-    // Actualizamos datos informativos
+
+    // info
     business_name: newLead.business_name || existing.business_name,
     zone: newLead.zone || existing.zone,
     google_reviews: newLead.google_reviews ?? existing.google_reviews,
     google_rating: newLead.google_rating ?? existing.google_rating,
     website: newLead.website || existing.website,
     source: newLead.source || existing.source,
-    
-    // Si hay email nuevo, lo ponemos. Si no, dejamos el que había.
-    email: shouldUpdateEmail ? newEmail : existing.email,
 
-    // Si actualizamos email, ponemos estado EMAIL_NEW y fecha de HOY
-    email_status: shouldUpdateEmail ? "EMAIL_NEW" : (existing.email_status || "EMAIL_NEW"),
+    // identifiers
+    whatsapp_e164: shouldUpdatePhone ? newLead.whatsapp_e164 : existing.whatsapp_e164,
+    email: shouldUpdateEmail ? newEmailNorm : existing.email,
+
+    // si entra email nuevo, rearmamos el flujo email
+    email_status: shouldUpdateEmail ? "EMAIL_NEW" : (existing.email_status || ""),
     email_next_send_at: shouldUpdateEmail ? hoy : (existing.email_next_send_at || ""),
-    
-    // Mantenemos estado de WhatsApp
+
+    // mantener estados WA + stops
     status: existing.status || "NEW",
-    stop_all: existing.stop_all || "FALSE"
+    stop_all: existing.stop_all || "FALSE",
   };
 
-  // Solo hacemos el update en la hoja si realmente cambió algo (email o datos)
-  console.log(`[engine] Actualizando lead: ${merged.business_name} ${shouldUpdateEmail ? "(CON EMAIL NUEVO)" : ""}`);
+  console.log(
+    `[engine] Actualizando lead: ${merged.business_name}` +
+      `${shouldUpdateEmail ? " (EMAIL NUEVO)" : ""}` +
+      `${shouldUpdatePhone ? " (PHONE NUEVO)" : ""}`
+  );
+
   await updateRow("Leads", existing.__rowNumber, rowFromLeadObj(merged));
-  
   return { action: "update" };
-}
-
-// --- 1) SCRAPING diario por zonas (Apify → Sheets)
-async function dailyScrape() {
-  for (const zone of cfg.APIFY_ZONES) {
-    const leads = await scrapeZone(zone);
-    for (const l of leads) {
-      await upsertLeadByPhone(l);
-    }
-  }
-}
-
-// --- 2) ENVÍO de nuevos repartido (WhatsApp MSG1)
-async function sendMsg1(lead) {
-  // 1. Enviamos el template de WhatsApp (Día 1)
-  const msg = await sendTemplate({
-    toE164: lead.whatsapp_e164,
-    contentSid: cfg.TPL_MSG1_SID,
-    variables: { 
-      "1": String(lead.google_reviews || "0") 
-    },
-    statusCallbackUrl: statusCallbackUrl(),
-  });
-
-  const sentAt = isoNow();
-  
-  // 2. Calculamos el próximo envío: Hoy + 48 horas = Día 3
-  // Esto hace que el sistema ignore este lead el Día 2 y lo retome el Día 3.
-  const nextDate = addHoursIso(sentAt, 48);
-
-  // 3. Actualizamos el objeto lead con los nuevos datos
-  lead.status = "MSG1_SENT";
-  lead.last_outbound_at = sentAt;
-  lead.next_send_at = nextDate; // Programado para el Día 3
-  lead.msg1_sid = msg.sid;
-
-  // 4. Guardamos los cambios en la Google Sheet
-  console.log(`[engine] WhatsApp MSG1 enviado a ${lead.business_name}. Próximo WA: ${nextDate}`);
-  await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
 
 // --- EMAILS (D0, +24h, +72h)
@@ -287,6 +279,26 @@ function isTodayIso(iso) {
     && d.getDate() === now.getDate();
 }
 
+async function sendMsg1(lead) {
+  const msg = await sendTemplate({
+    toE164: lead.whatsapp_e164,
+    contentSid: cfg.TPL_MSG1_SID,
+    variables: { "1": String(lead.google_reviews || "0") },
+    statusCallbackUrl: statusCallbackUrl(),
+  });
+
+  const sentAt = isoNow();
+  const nextDate = addHoursIso(sentAt, 48);
+
+  lead.status = "MSG1_SENT";
+  lead.last_outbound_at = sentAt;
+  lead.next_send_at = nextDate;
+  lead.msg1_sid = msg.sid;
+
+  console.log(`[engine] WhatsApp MSG1 enviado a ${lead.business_name}. Próximo WA: ${nextDate}`);
+  await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
+}
+
 async function processNewLeadsPaced() {
   const now = new Date();
   const { rows } = await getLeadsTable();
@@ -315,6 +327,7 @@ async function processNewLeadsPaced() {
   const newLeads = rows
     .filter(r =>
       r.status === "NEW" &&
+      String(r.whatsapp_e164 || "").trim() && 
       String(r.stop_all || "").toUpperCase() !== "TRUE"
     )
     .slice(0, Math.min(allowedToSendNow, 3));
@@ -341,7 +354,27 @@ async function processNewLeadsPaced() {
     }
   }
 }
+async function processNewEmailsPaced() {
+  const nowIso = isoNow();
+  const { rows } = await getLeadsTable();
 
+  // Enviar pocos por tick para evitar picos
+  const due = rows
+    .filter(r => String(r.stop_all || "").toUpperCase() !== "TRUE")
+    .filter(r => r.email && (r.email_status === "EMAIL_NEW" || !r.email_status))
+    .filter(r => !r.email_next_send_at || r.email_next_send_at <= nowIso)
+    .slice(0, 3);
+
+  for (const lead of due) {
+    try {
+      await sendEmail1(lead);
+    } catch (e) {
+      console.error("[email-paced] send error", lead.email, e?.message || e);
+      lead.email_status = "EMAIL_ERROR";
+      await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
+    }
+  }
+}
 // --- 3) FOLLOWUPS WhatsApp (MSG2 / MSG3) cuando toque
 async function sendMsg2(lead) {
   const current = parseInt(lead.google_reviews || "0", 10);
@@ -467,6 +500,15 @@ async function enrichExistingLeadsEmails() {
 
   console.log("[enrich] terminado.");
 }
+
+async function dailyScrape() {
+  for (const zone of cfg.APIFY_ZONES) {
+    const leads = await scrapeZone(zone);
+    for (const l of leads) {
+      await upsertLeadByPhone(l); // (con tu upsert nuevo, este nombre ya vale)
+    }
+  }
+}
 // --- Scheduler
 function startEngine() {
   // Followups + pacing cada 5 min
@@ -476,6 +518,7 @@ function startEngine() {
     processNewLeadsPaced().catch(console.error);
     processDueFollowups().catch(console.error);
     processDueEmailFollowups().catch(console.error);
+    processNewEmailsPaced().catch(console.error);
 
   }, { timezone: "Europe/Madrid" });
 

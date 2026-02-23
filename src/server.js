@@ -6,9 +6,8 @@ const multer = require("multer");
 const cfg = require("./config");
 const { startEngine } = require("./engine");
 const { enrichExistingLeadsEmails } = require("./engine"); // 👈 AQUI
-const { readRange, updateRow, appendRow, appendRows } = require("./sheets");
+const { readRange, updateRow, appendRow, appendRows, updateCell } = require("./sheets");
 const { toE164Spain } = require("./utils");
-
 const app = express();
 const upload = multer(); // para SendGrid Inbound Parse (multipart/form-data)
 
@@ -35,7 +34,8 @@ function validateTwilioRequest(req) {
 
 async function findLeadRowByPhone(e164) {
   const values = await readRange("Leads!A:Z");
-  const header = values[0] || [];
+  const rawHeader = values[0] || [];
+  const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
   const rows = values.slice(1);
 
   const idxPhone = header.indexOf("whatsapp_e164");
@@ -194,26 +194,37 @@ app.get("/admin/import-dataset", async (req, res) => {
   if (!datasetId) return res.status(400).send("Falta el ID del dataset");
 
   try {
-    // 1) Cargar datos existentes para comparar
+    // 1) Cargar datos existentes para comparar (NORMALIZANDO HEADERS)
     const values = await readRange("Leads!A:Z");
-    const header = values[0] || [];
+    const rawHeader = values[0] || [];
+    const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
     const rows = values.slice(1);
-    
-    const idxPhone = header.indexOf("whatsapp_e164"); // Col D (index 3)
-    const idxEmail = header.indexOf("email");         // Col O (index 14)
-    
-    // Mapeo de teléfonos a su índice de fila
-    const phoneMap = new Map(); 
-    if (idxPhone >= 0) {
-      rows.forEach((r, index) => {
-        if (r[idxPhone]) phoneMap.set(String(r[idxPhone]).trim(), index);
-      });
+
+    const idxPhone = header.indexOf("whatsapp_e164");        // D
+    const idxEmail = header.indexOf("email");                // O
+    const idxWebsite = header.indexOf("website");            // H
+    const idxEmailStatus = header.indexOf("email_status");   // R
+    const idxEmailNext = header.indexOf("email_next_send_at");// T
+
+    if (idxPhone < 0 && idxEmail < 0) {
+      return res.status(500).send("No se encontraron columnas whatsapp_e164 ni email en Leads.");
     }
+
+    // Mapas para buscar rápido
+    const phoneMap = new Map(); // e164 -> rowIndex
+    const emailMap = new Map(); // email -> rowIndex
+
+    rows.forEach((r, index) => {
+      const p = idxPhone >= 0 ? String(r[idxPhone] || "").trim() : "";
+      const e = idxEmail >= 0 ? String(r[idxEmail] || "").trim().toLowerCase() : "";
+      if (p) phoneMap.set(p, index);
+      if (e) emailMap.set(e, index);
+    });
 
     // 2) Fetch a Apify
     const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
     const resp = await fetch(url);
-    
+
     if (!resp.ok) {
       const errorText = await resp.text();
       return res.status(resp.status).send(`Error de Apify: ${errorText}`);
@@ -225,67 +236,112 @@ app.get("/admin/import-dataset", async (req, res) => {
     // 3) Procesar Items
     const rowsToInsert = [];
     let updatedCount = 0;
-    const hoy = new Date().toISOString(); 
+    const hoy = new Date().toISOString();
 
     for (const x of items) {
       const e164 = toE164Spain(x.phone || "");
-      if (!e164) continue;
 
-      // Extraer email de los campos posibles de Apify
-      const foundEmail = x.email || (x.contactInfo && x.contactInfo.emails && x.contactInfo.emails[0]) || "";
+      // Email y web desde posibles campos de Apify
+      const foundEmailRaw =
+        x.email || (x.contactInfo && x.contactInfo.emails && x.contactInfo.emails[0]) || "";
+      const foundEmail = String(foundEmailRaw).trim().toLowerCase();
       const foundWeb = x.website || "";
 
-      // ¿YA EXISTE EL TELÉFONO EN LA HOJA?
-      if (phoneMap.has(e164)) {
-        const rowIndex = phoneMap.get(e164);
-        const currentRow = rows[rowIndex];
-        const rowNumber = rowIndex + 2; 
+      const hasEmail = foundEmail.includes("@");
+      const hasPhone = !!e164;
 
-        // Si existe pero NO tiene email en la columna O (índice 14), lo actualizamos
-        if (!currentRow[idxEmail] && foundEmail) {
-          console.log(`[import] Enriqueciendo lead existente: ${e164} con email ${foundEmail}`);
-          
-          // Actualizamos Website (H = Col 8)
-          if (foundWeb) await updateCell("Leads", rowNumber, 8, foundWeb);
-          
-          // Actualizamos Email (O = Col 15)
-          await updateCell("Leads", rowNumber, 15, foundEmail);
-          
-          // Actualizamos Estados de Email (R = Col 18 y T = Col 20)
-          await updateCell("Leads", rowNumber, 18, "EMAIL_NEW"); 
-          await updateCell("Leads", rowNumber, 20, hoy); 
-          
-          updatedCount++;
+      // si no hay ni phone ni email, skip
+      if (!hasPhone && !hasEmail) continue;
+
+      // ✅ 1) MATCH POR EMAIL (PRIORIDAD)
+      if (hasEmail && idxEmail >= 0 && emailMap.has(foundEmail)) {
+        const rowIndex = emailMap.get(foundEmail);
+        const currentRow = rows[rowIndex];
+        const rowNumber = rowIndex + 2;
+
+        // Si el lead por email NO tiene phone y ahora lo traemos, lo metemos
+        if (hasPhone && idxPhone >= 0 && !String(currentRow[idxPhone] || "").trim()) {
+          console.log(`[import] Match por EMAIL. Añadiendo teléfono ${e164} a ${foundEmail}`);
+          await updateCell("Leads", rowNumber, idxPhone + 1, e164);
+          phoneMap.set(e164, rowIndex); // para futuras iteraciones
         }
-        continue; 
+
+        // Si no tenía website, lo completamos
+        if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
+          await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
+        }
+
+        // Ya existe: no insertamos
+        continue;
       }
 
-      // SI ES UN LEAD NUEVO: Creamos la fila respetando el orden exacto A:X
+      // ✅ 2) MATCH POR TELÉFONO
+      if (hasPhone && idxPhone >= 0 && phoneMap.has(e164)) {
+        const rowIndex = phoneMap.get(e164);
+        const currentRow = rows[rowIndex];
+        const rowNumber = rowIndex + 2;
+
+        // Si existe pero NO tiene email, lo actualizamos
+        if (hasEmail && idxEmail >= 0 && !String(currentRow[idxEmail] || "").trim()) {
+          console.log(`[import] Match por PHONE. Enriqueciendo ${e164} con email ${foundEmail}`);
+
+          // Website si viene y falta
+          if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
+            await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
+          }
+
+          // Email
+          await updateCell("Leads", rowNumber, idxEmail + 1, foundEmail);
+
+          // Estados email
+          if (idxEmailStatus >= 0) await updateCell("Leads", rowNumber, idxEmailStatus + 1, "EMAIL_NEW");
+          if (idxEmailNext >= 0) await updateCell("Leads", rowNumber, idxEmailNext + 1, hoy);
+
+          // para futuras iteraciones
+          emailMap.set(foundEmail, rowIndex);
+          updatedCount++;
+        } else {
+          // aunque ya tenga email, si falta website, lo completamos
+          if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
+            await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
+          }
+        }
+
+        continue;
+      }
+
+      // ✅ 3) NO EXISTE -> INSERT NUEVO
+      // Mantengo tu comportamiento: solo insertamos si hay teléfono.
+      if (!hasPhone) continue;
+
       const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
       rowsToInsert.push([
-        lead_id,               // A: lead_id
-        x.title || "",         // B: business_name
-        x.city || "Getafe",    // C: zone
-        e164,                  // D: whatsapp_e164
-        x.reviewsCount ?? "",  // E: google_reviews
-        x.totalScore ?? "",    // F: google_rating
-        x.url || "apify",      // G: source
-        foundWeb,              // H: website
-        "NEW",                 // I: status (WA)
-        "",                    // J: last_outbound_at
-        hoy,                   // K: next_send_at (WA D0)
-        "",                    // L: msg1_sid
-        "",                    // M: msg2_sid
-        "",                    // N: msg3_sid (Hueco necesario)
-        foundEmail,            // O: email (COLUMNA CLAVE)
-        "FALSE",               // P: stop_all
-        "",                    // Q: stop_reason
-        "EMAIL_NEW",           // R: email_status
-        "",                    // S: email_last_outbound_at
-        hoy,                   // T: email_next_send_at (EMAIL D0)
-        "", "", "", ""         // U-X: Ids y Replies
+        lead_id,                    // A: lead_id
+        x.title || "",              // B: business_name
+        x.city || "Getafe",         // C: zone
+        e164,                       // D: whatsapp_e164
+        x.reviewsCount ?? "",       // E: google_reviews
+        x.totalScore ?? "",         // F: google_rating
+        x.url || "apify",           // G: source
+        foundWeb,                   // H: website
+        "NEW",                      // I: status (WA)
+        "",                         // J: last_outbound_at
+        hoy,                        // K: next_send_at (WA D0)
+        "",                         // L: msg1_sid
+        "",                         // M: msg2_sid
+        "",                         // N: msg3_sid
+        hasEmail ? foundEmail : "", // O: email
+        "FALSE",                    // P: stop_all
+        "",                         // Q: stop_reason
+        hasEmail ? "EMAIL_NEW" : "",// R: email_status
+        "",                         // S: email_last_outbound_at
+        hasEmail ? hoy : "",        // T: email_next_send_at
+        "", "", "", ""              // U-X: Ids y Replies
       ]);
-      phoneMap.set(e164, -1); 
+
+      phoneMap.set(e164, -1);
+      if (hasEmail) emailMap.set(foundEmail, -1);
     }
 
     // 4) Insertar los nuevos leads en bloques
@@ -299,7 +355,7 @@ app.get("/admin/import-dataset", async (req, res) => {
       }
     }
 
-    res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} enriquecidos con email.`);
+    res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} enriquecidos/mergeados.`);
 
   } catch (err) {
     console.error("[import] Error:", err);
