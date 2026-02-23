@@ -45,30 +45,29 @@ async function getLeadsTable() {
 
 function rowFromLeadObj(lead) {
   return [
-    lead.lead_id || "",
-    lead.business_name || "",
-    lead.zone || "",
-    lead.whatsapp_e164 || "",
-    lead.google_reviews || "",
-    lead.google_rating || "",
-    lead.source || "",
-    lead.status || "",
-    lead.last_outbound_at || "",
-    lead.next_send_at || "",
-    lead.msg1_sid || "",
-    lead.msg2_sid || "",
-    lead.msg3_sid || "",
-    // --- NUEVO (N..W)
-    lead.email || "",
-    lead.stop_all || "",
-    lead.stop_reason || "",
-    lead.email_status || "",
-    lead.email_last_outbound_at || "",
-    lead.email_next_send_at || "",
-    lead.email1_id || "",
-    lead.email2_id || "",
-    lead.email3_id || "",
-    lead.email_reply_at || "",
+    lead.lead_id || "",               // A
+    lead.business_name || "",         // B
+    lead.zone || "",                  // C
+    lead.whatsapp_e164 || "",         // D
+    lead.google_reviews || "",        // E
+    lead.google_rating || "",         // F
+    lead.source || "",                // G
+    lead.status || "",                // H
+    lead.last_outbound_at || "",      // I
+    lead.next_send_at || "",          // J
+    lead.msg1_sid || "",              // K
+    lead.msg2_sid || "",              // L
+    lead.msg3_sid || "",              // M
+    lead.email || "",                 // N
+    lead.stop_all || "",              // O
+    lead.stop_reason || "",           // P
+    lead.email_status || "",          // Q
+    lead.email_last_outbound_at || "",// R
+    lead.email_next_send_at || "",    // S
+    lead.email1_id || "",             // T
+    lead.email2_id || "",             // U
+    lead.email3_id || "",             // V
+    lead.email_reply_at || "",        // W
   ];
 }
 
@@ -414,27 +413,34 @@ async function enrichExistingLeadsEmails() {
   console.log(`[enrich] Analizando ${rows.length} filas...`);
 
   for (const lead of rows) {
-    // --- LOG DE DEBUG ---
-    // Esto nos dirá qué ve el código exactamente en cada fila
-    if (lead.__rowNumber < 15) { // Solo logueamos las primeras para no saturar
-        console.log(`Fila ${lead.__rowNumber}: email=[${lead.email}], website=[${lead.website}], stop=[${lead.stop_all}]`);
-    }
+    // FIX: Usamos 'source' porque en tu Sheet la URL está en esa columna
+    const urlParaScrapear = lead.source || lead.website;
 
-    if (!lead.email && lead.website && String(lead.stop_all || "").toUpperCase() !== "TRUE") {
-      console.log("[enrich] Buscando email para:", lead.business_name, "en", lead.website);
+    if (
+      !lead.email && 
+      urlParaScrapear && 
+      String(lead.stop_all || "").toUpperCase() !== "TRUE"
+    ) {
+      console.log(`[enrich] Buscando en: ${lead.business_name} -> ${urlParaScrapear}`);
+
       try {
-        const email = await scrapeEmailFromWebsite(lead.website);
+        const email = await scrapeEmailFromWebsite(urlParaScrapear);
+
         if (email) {
           lead.email = email;
+          // Esto ahora escribirá el email en la columna N correctamente
           await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
-          console.log("[enrich] ✅ Encontrado y guardado:", email);
+          console.log(`[enrich] ✅ Guardado: ${email}`);
+        } else {
+          console.log(`[enrich] ❌ No se halló email en: ${urlParaScrapear}`);
         }
       } catch (e) {
-        console.log("[enrich] Error en sitio:", lead.website, e.message);
+        console.error(`[enrich] Error en fila ${lead.__rowNumber}:`, e.message);
       }
     }
   }
-  console.log("[enrich] proceso terminado.");
+
+  console.log("[enrich] terminado.");
 }
 // --- Scheduler
 function startEngine() {
