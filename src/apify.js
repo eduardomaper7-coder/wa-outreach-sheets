@@ -26,7 +26,6 @@ async function runActorAndGetItems(input) {
 
   return await res.json();
 }
-
 async function scrapeZone(zone) {
   const input = {
     searchStringsArray: [
@@ -37,37 +36,36 @@ async function scrapeZone(zone) {
     maxItems: 200,
     language: "es",
     countryCode: "es",
+    // --- CAMBIOS CLAVE PARA EMAILS ---
+    scrapePlaceDetailPage: true,
+    scrapeContacts: true,
+    scrapeSocialMediaProfiles: {
+      facebooks: true,
+      instagrams: true
+    },
+    maximumLeadsEnrichmentRecords: 10
+    // ---------------------------------
   };
 
   const items = await runActorAndGetItems(input);
 
   const leads = await Promise.all(
     items.map(async (x) => {
-      // Priorizamos la web real del negocio
-      const website = x.website || ""; 
-      let email = x.email || "";
-
-      // Si tenemos web pero no email, intentamos extraerlo en el momento del scrapeo
-      if (!email && website && website.includes("http")) {
-        email = await scrapeEmailFromWebsite(website);
-      }
-
+      // Ahora x.email debería venir lleno desde Apify
       return {
         business_name: x.title || "",
         zone,
         whatsapp_e164: toE164Spain(x.phone || ""),
         google_reviews: x.reviewsCount ?? null,
         google_rating: x.totalScore ?? null,
-        website: website, // <--- Ahora se guarda la web real
-        email: email || "",
+        website: x.website || "", 
+        email: x.email || "", // <--- El email ya estará aquí
         source: x.url || "apify",
       };
     })
   );
 
-  return leads.filter(
-    (r) => r.business_name && r.whatsapp_e164
-  );
+  return leads.filter(r => r.business_name && r.whatsapp_e164);
 }
 
 module.exports = { scrapeZone };
