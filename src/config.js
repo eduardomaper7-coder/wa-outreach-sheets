@@ -32,4 +32,8 @@ module.exports = {
   SEND_WINDOW_END: parseInt(process.env.SEND_WINDOW_END || "19", 10),
   JITTER_MIN_HOURS: parseInt(process.env.JITTER_MIN_HOURS || "-6", 10),
   JITTER_MAX_HOURS: parseInt(process.env.JITTER_MAX_HOURS || "10", 10),
+
+  SENDGRID_API_KEY: must("SENDGRID_API_KEY"),
+  EMAIL_FROM: must("EMAIL_FROM"),
+  EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO || "",
 };

@@ -56,3 +56,10 @@ function expectedNewSendsByNow(now, cfg) {
 }
 
 module.exports = { toE164Spain, computeNextSendFrom, expectedNewSendsByNow };
+
+function addHoursIso(iso, hours) {
+  const d = new Date(iso);
+  return new Date(d.getTime() + hours * 3600 * 1000).toISOString();
+}
+
+module.exports = { toE164Spain, computeNextSendFrom, expectedNewSendsByNow, addHoursIso };

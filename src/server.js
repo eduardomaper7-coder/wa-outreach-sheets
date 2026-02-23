@@ -1,11 +1,16 @@
+// server.js (COMPLETO con cambios: Leads!A:Z + stop_all on replies + inbound email webhook)
+
 const express = require("express");
 const twilio = require("twilio");
+const multer = require("multer");
 const cfg = require("./config");
 const { startEngine } = require("./engine");
 const { readRange, updateRow, appendRow, appendRows } = require("./sheets");
 const { toE164Spain } = require("./utils");
-const { upsertLeadByPhone } = require("./engine");
+
 const app = express();
+const upload = multer(); // para SendGrid Inbound Parse (multipart/form-data)
+
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
@@ -18,7 +23,7 @@ function validateTwilioRequest(req) {
 }
 
 async function findLeadRowByPhone(e164) {
-  const values = await readRange("Leads!A:M");
+  const values = await readRange("Leads!A:Z");
   const header = values[0] || [];
   const rows = values.slice(1);
 
@@ -27,6 +32,26 @@ async function findLeadRowByPhone(e164) {
 
   for (let i = 0; i < rows.length; i++) {
     if ((rows[i][idxPhone] || "") === e164) {
+      return { header, row: rows[i], rowNumber: i + 2 };
+    }
+  }
+  return null;
+}
+
+async function findLeadRowByEmail(email) {
+  const values = await readRange("Leads!A:Z");
+  const header = values[0] || [];
+  const rows = values.slice(1);
+
+  const idxEmail = header.indexOf("email");
+  if (idxEmail === -1) return null;
+
+  const target = String(email || "").trim().toLowerCase();
+  if (!target) return null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const v = String(rows[i][idxEmail] || "").trim().toLowerCase();
+    if (v && v === target) {
       return { header, row: rows[i], rowNumber: i + 2 };
     }
   }
@@ -42,7 +67,7 @@ function updateLeadRowFromHeader(header, row, patch) {
   return out;
 }
 
-// INBOUND: si responde → status=REPLIED, next_send_at vacío
+// INBOUND WhatsApp: si responde → status=REPLIED, stop_all=TRUE, next_send_at vacío
 app.post("/webhooks/inbound", async (req, res) => {
   // opcional: si quieres validar firma Twilio
   // if (!validateTwilioRequest(req)) return res.status(403).send("Invalid signature");
@@ -60,11 +85,53 @@ app.post("/webhooks/inbound", async (req, res) => {
     const updated = updateLeadRowFromHeader(header, row, {
       status: "REPLIED",
       next_send_at: "",
+      stop_all: "TRUE",
+      stop_reason: "WA_REPLY",
+      email_next_send_at: "", // para parar email también
     });
     await updateRow("Leads", rowNumber, updated);
   }
 
   res.status(200).type("text/xml").send("<Response></Response>");
+});
+
+// INBOUND Email (SendGrid Inbound Parse): si responde → parar email + whatsapp
+// Configura en SendGrid Inbound Parse la URL: https://TU_PUBLIC_BASE_URL/webhooks/sendgrid/inbound
+app.post("/webhooks/sendgrid/inbound", upload.none(), async (req, res) => {
+  const fromRaw = String(req.body.from || "");
+  const subject = String(req.body.subject || "");
+  const text = String(req.body.text || "");
+  const html = String(req.body.html || "");
+
+  // extrae email del "from" (puede venir "Nombre <email@dominio.com>")
+  const match = fromRaw.match(/<([^>]+)>/);
+  const fromEmail = (match ? match[1] : fromRaw).trim().toLowerCase();
+
+  // registra inbound email (crea sheet "InboundEmail" si no existe)
+  await appendRow("InboundEmail", [
+    new Date().toISOString(),
+    fromEmail,
+    subject,
+    (text || "").slice(0, 500),
+    (html || "").slice(0, 500),
+  ]);
+
+  const found = await findLeadRowByEmail(fromEmail);
+  if (found) {
+    const { header, row, rowNumber } = found;
+    const updated = updateLeadRowFromHeader(header, row, {
+      status: "REPLIED",
+      next_send_at: "",
+      stop_all: "TRUE",
+      stop_reason: "EMAIL_REPLY",
+      email_status: "REPLIED",
+      email_next_send_at: "",
+      email_reply_at: new Date().toISOString(),
+    });
+    await updateRow("Leads", rowNumber, updated);
+  }
+
+  res.status(200).send("ok");
 });
 
 // STATUS callback: si falla → marca ERROR (simple)
@@ -76,7 +143,7 @@ app.post("/webhooks/status", async (req, res) => {
 
   if (status === "failed" || status === "undelivered") {
     // busca por SID (msg1/msg2/msg3) leyendo sheet (simple, vale para pocos miles)
-    const values = await readRange("Leads!A:M");
+    const values = await readRange("Leads!A:Z");
     const header = values[0] || [];
     const rows = values.slice(1);
 
@@ -109,12 +176,11 @@ app.get("/admin/scrape", async (req, res) => {
   res.send("scrape ok");
 });
 
-
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;
 
   // 1) cargar teléfonos ya existentes
-  const values = await readRange("Leads!A:M");
+  const values = await readRange("Leads!A:Z");
   const header = values[0] || [];
   const rows = values.slice(1);
   const idxPhone = header.indexOf("whatsapp_e164");
@@ -156,6 +222,17 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
       "",
       "",
       "",
+      // --- NUEVO (N..W) - placeholders para que cuadre con A:Z (si tu sheet tiene estas columnas)
+      x.email || "",   // N: email (si viene)
+      "",              // O: stop_all
+      "",              // P: stop_reason
+      "EMAIL_NEW",     // Q: email_status
+      "",              // R: email_last_outbound_at
+      "",              // S: email_next_send_at
+      "",              // T: email1_id
+      "",              // U: email2_id
+      "",              // V: email3_id
+      "",              // W: email_reply_at
     ]);
   }
 
@@ -176,24 +253,24 @@ app.get("/admin/force-send", async (req, res) => {
   try {
     console.log("[force-send] start");
 
-    const { readRange, updateRow } = require("./sheets");
-    const { sendTemplate } = require("./twilio");
-    const { computeNextSendFrom } = require("./utils");
-    const cfg = require("./config");
-
-    const values = await readRange("Leads!A:M");
+    const values = await readRange("Leads!A:Z");
     const header = values[0] || [];
     const rows = values.slice(1);
 
     const idxStatus = header.indexOf("status");
-    const idxPhone  = header.indexOf("whatsapp_e164");
+    const idxPhone = header.indexOf("whatsapp_e164");
     const idxReviews = header.indexOf("google_reviews");
     const idxLast = header.indexOf("last_outbound_at");
     const idxNext = header.indexOf("next_send_at");
     const idxSid1 = header.indexOf("msg1_sid");
+    const idxStopAll = header.indexOf("stop_all");
 
-    const i = rows.findIndex(r => String(r[idxStatus] || "") === "NEW" && String(r[idxPhone] || "").trim());
-    if (i === -1) return res.status(404).send("No NEW leads found");
+    const i = rows.findIndex(r =>
+      String(r[idxStatus] || "") === "NEW" &&
+      String(r[idxPhone] || "").trim() &&
+      String(r[idxStopAll] || "").toUpperCase() !== "TRUE"
+    );
+    if (i === -1) return res.status(404).send("No NEW leads found (or all are stopped)");
 
     const rowNumber = i + 2;
     const toE164 = String(rows[i][idxPhone]).trim();
@@ -202,15 +279,17 @@ app.get("/admin/force-send", async (req, res) => {
     console.log("[force-send] sending to", toE164, "row", rowNumber);
     console.log("[force-send] TPL_MSG1_SID", cfg.TPL_MSG1_SID);
 
-    const msg = await sendTemplate({
-      toE164,
+    const client = twilio(cfg.TWILIO_ACCOUNT_SID, cfg.TWILIO_AUTH_TOKEN);
+    const msg = await client.messages.create({
+      from: cfg.TWILIO_WHATSAPP_FROM,
+      to: `whatsapp:${toE164}`,
       contentSid: cfg.TPL_MSG1_SID,
-      variables: { "1": reviews },
-      statusCallbackUrl: `${cfg.PUBLIC_BASE_URL}/webhooks/status`,
+      contentVariables: JSON.stringify({ "1": reviews }),
+      statusCallback: `${cfg.PUBLIC_BASE_URL}/webhooks/status`,
     });
 
     const sentAt = new Date().toISOString();
-    const next = computeNextSendFrom(sentAt, 48, cfg);
+    const next = require("./utils").computeNextSendFrom(sentAt, 48, cfg);
 
     rows[i][idxStatus] = "MSG1_SENT";
     rows[i][idxLast] = sentAt;

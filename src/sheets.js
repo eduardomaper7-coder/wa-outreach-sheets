@@ -54,7 +54,7 @@ async function updateRow(sheetName, rowNumber1Based, rowValues) {
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.update({
     spreadsheetId: cfg.SHEETS_SPREADSHEET_ID,
-    range: `${sheetName}!A${rowNumber1Based}:M${rowNumber1Based}`,
+    range: `${sheetName}!A${rowNumber1Based}:Z${rowNumber1Based}`,
     valueInputOption: "RAW",
     requestBody: { values: [rowValues] },
   });
