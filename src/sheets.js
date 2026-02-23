@@ -37,6 +37,19 @@ async function appendRow(sheetName, rowValues) {
   });
 }
 
+async function appendRows(sheetName, rows) {
+  // rows = [ [col1, col2, ...], [..], ... ]
+  if (!rows || rows.length === 0) return;
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: cfg.GSHEET_ID,
+    range: `${sheetName}!A1`,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: rows },
+  });
+}
+
 async function updateRow(sheetName, rowNumber1Based, rowValues) {
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.update({
@@ -47,4 +60,4 @@ async function updateRow(sheetName, rowNumber1Based, rowValues) {
   });
 }
 
-module.exports = { readRange, appendRow, updateRow };
+module.exports = { readRange, updateRow, appendRow, appendRows };
