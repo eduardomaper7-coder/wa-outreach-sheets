@@ -187,17 +187,38 @@ async function upsertLeadByPhone(newLead) {
 
 // --- EMAILS (D0, +24h, +72h)
 async function sendEmail1(lead) {
-  if (!lead.email) {
-    console.log(`[engine] Saltando Email1 para ${lead.business_name}: Sin dirección de email.`);
-    return;
-  }
+  if (!lead.email) return;
 
-  // 1. Definimos el contenido del correo (Día 1)
-  const subject = `Ayuda para las reseñas de ${lead.business_name}`;
-  const text = `Hola ${lead.business_name}, te escribía por aquí también para...`;
-  const html = `<p>Hola ${lead.business_name},</p><p>Te escribía por aquí también para...</p>`;
+  const business = lead.business_name || "";
+  const reviews = lead.google_reviews || "0";
 
-  // 2. Enviamos el correo vía SendGrid
+  const subject = `Más reseñas para ${business} (sin esfuerzo)`;
+
+  const text = `
+Hola,
+
+He visto que tenéis ${reviews} reseñas en Google y creo que podemos ayudaros a conseguir muchas más, mejorando también vuestra valoración.
+
+Hemos desarrollado un sistema que automatiza la recogida de reseñas por WhatsApp y analiza la opinión de vuestros pacientes para mejorar vuestra reputación online.
+
+¿Te vendría bien mañana o pasado para una llamada rápida (10 min) y te explico cómo funciona?
+
+Un saludo,
+Eduardo
+`;
+
+  const html = `
+<p>Hola,</p>
+
+<p>He visto que tenéis <strong>${reviews}</strong> reseñas en Google y creo que podemos ayudaros a conseguir muchas más, mejorando también vuestra valoración.</p>
+
+<p>Hemos desarrollado un sistema que automatiza la recogida de reseñas por WhatsApp y analiza la opinión de vuestros pacientes para mejorar vuestra reputación online.</p>
+
+<p>¿Te vendría bien mañana o pasado para una llamada rápida (10 min) y te explico cómo funciona?</p>
+
+<p>Un saludo,<br>Eduardo</p>
+`;
+
   const { messageId } = await sendEmail({
     to: lead.email,
     subject,
@@ -208,26 +229,45 @@ async function sendEmail1(lead) {
 
   const sentAt = isoNow();
 
-  // 3. Programamos el SIGUIENTE Email para el Día 2 (Hoy + 24 horas)
-  const nextDate = addHoursIso(sentAt, 24);
-
-  // 4. Actualizamos el objeto lead
   lead.email_status = "EMAIL1_SENT";
   lead.email_last_outbound_at = sentAt;
-  lead.email_next_send_at = nextDate; // Esto dispara el Email 2 mañana
+  lead.email_next_send_at = addHoursIso(sentAt, 24);
   lead.email1_id = messageId || "sent";
 
-  // 5. Guardamos en la Google Sheet
-  console.log(`[engine] Email1 enviado a ${lead.email}. Próximo Email (Día 2): ${nextDate}`);
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
 
 async function sendEmail2(lead) {
   if (!lead.email) return;
 
-  const subject = `¿Lo revisaste, ${lead.business_name || ""}?`;
-  const text = `Hola, solo hago seguimiento...`;
-  const html = `<p>Hola, solo hago seguimiento...</p>`;
+  const business = lead.business_name || "";
+
+  const subject = `¿Lo vemos esta semana, ${business}?`;
+
+  const text = `
+Hola,
+
+Te escribo por si no viste mi mensaje anterior.
+
+Creo que lo que estamos haciendo puede encajaros bien para aumentar reseñas sin más trabajo por vuestra parte.
+
+¿Te va bien esta semana para comentarlo?
+
+Un saludo,
+Eduardo
+`;
+
+  const html = `
+<p>Hola,</p>
+
+<p>Te escribo por si no viste mi mensaje anterior.</p>
+
+<p>Creo que lo que estamos haciendo puede encajaros bien para aumentar reseñas sin más trabajo por vuestra parte.</p>
+
+<p>¿Te va bien esta semana para comentarlo?</p>
+
+<p>Un saludo,<br>Eduardo</p>
+`;
 
   const { messageId } = await sendEmail({
     to: lead.email,
@@ -238,9 +278,10 @@ async function sendEmail2(lead) {
   });
 
   const sentAt = isoNow();
+
   lead.email_status = "EMAIL2_SENT";
   lead.email_last_outbound_at = sentAt;
-  lead.email_next_send_at = addHoursIso(sentAt, 48); // para llegar a +72h total
+  lead.email_next_send_at = addHoursIso(sentAt, 48);
   lead.email2_id = messageId || "sent";
 
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
@@ -249,9 +290,28 @@ async function sendEmail2(lead) {
 async function sendEmail3(lead) {
   if (!lead.email) return;
 
-  const subject = `Último mensaje (prometo) 🙂`;
-  const text = `Si quieres lo dejamos aquí...`;
-  const html = `<p>Si quieres lo dejamos aquí...</p>`;
+  const subject = `¿Lo dejamos aquí?`;
+
+  const text = `
+No quiero ser insistente, así que este es mi último mensaje.
+
+Si ahora no es buen momento, lo dejamos aquí sin problema.
+
+Y si más adelante quieres mejorar vuestras reseñas, estaré encantado de ayudarte.
+
+Un saludo,
+Eduardo
+`;
+
+  const html = `
+<p>No quiero ser insistente, así que este es mi último mensaje.</p>
+
+<p>Si ahora no es buen momento, lo dejamos aquí sin problema.</p>
+
+<p>Y si más adelante quieres mejorar vuestras reseñas, estaré encantado de ayudarte.</p>
+
+<p>Un saludo,<br>Eduardo</p>
+`;
 
   const { messageId } = await sendEmail({
     to: lead.email,
@@ -262,6 +322,7 @@ async function sendEmail3(lead) {
   });
 
   const sentAt = isoNow();
+
   lead.email_status = "EMAIL3_SENT";
   lead.email_last_outbound_at = sentAt;
   lead.email_next_send_at = "";
