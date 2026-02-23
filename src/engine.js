@@ -51,14 +51,14 @@ function rowFromLeadObj(lead) {
     lead.whatsapp_e164 || "",         // D
     lead.google_reviews || "",        // E
     lead.google_rating || "",         // F
-    lead.website || "",               // G (NUEVA: Web real)
-    lead.source || "",                // H (Antes era G: Link de Google Maps)
+    lead.source || "",                // G (Según tu log, source está antes)
+    lead.website || "",               // H (Según tu log, website está aquí)
     lead.status || "",                // I
     lead.last_outbound_at || "",      // J
     lead.next_send_at || "",          // K
     lead.msg1_sid || "",              // L
     lead.msg2_sid || "",              // M
-    lead.email || "",                 // N (Email sigue en su sitio)
+    lead.email || "",                 // N
     lead.stop_all || "",              // O
     lead.stop_reason || "",           // P
     lead.email_status || "",          // Q
