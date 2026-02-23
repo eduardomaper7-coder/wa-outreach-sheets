@@ -231,6 +231,9 @@ app.get("/admin/import-dataset", async (req, res) => {
     }
 
     const items = await resp.json();
+    console.log("[import] items:", Array.isArray(items) ? items.length : typeof items);
+    console.log("[import] sample item keys:", items?.[0] ? Object.keys(items[0]) : "NO ITEMS");
+    console.log("[import] sample item:", items?.[0] || "NO ITEMS");
     if (!Array.isArray(items)) return res.status(500).send("Apify no devolvió una lista.");
 
     // 3) Procesar Items
