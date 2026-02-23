@@ -214,13 +214,17 @@ async function processDueFollowups() {
 function startEngine() {
   // Followups + pacing cada 5 min
   cron.schedule("*/5 * * * *", () => {
-    processNewLeadsPaced().catch(() => {});
-    processDueFollowups().catch(() => {});
+    console.log("[cron] tick", new Date().toISOString());
+
+    processNewLeadsPaced().catch(console.error);
+    processDueFollowups().catch(console.error);
   });
 
   // Scrape diario a la hora que elijas (ej. 06:00)
   cron.schedule(`0 ${cfg.APIFY_RUN_HOUR} * * *`, () => {
-    dailyScrape().catch(() => {});
+    console.log("[cron] daily scrape", new Date().toISOString());
+
+    dailyScrape().catch(console.error);
   });
 }
 
