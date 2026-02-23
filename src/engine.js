@@ -340,6 +340,13 @@ function isTodayIso(iso) {
     && d.getDate() === now.getDate();
 }
 
+function email1SentTodayCount(rows) {
+  return rows.filter(r =>
+    (r.email_status === "EMAIL1_SENT" || String(r.email1_id || "").trim()) &&
+    isTodayIso(r.email_last_outbound_at)
+  ).length;
+}
+
 async function sendMsg1(lead) {
   const msg = await sendTemplate({
     toE164: lead.whatsapp_e164,
@@ -416,15 +423,40 @@ async function processNewLeadsPaced() {
   }
 }
 async function processNewEmailsPaced() {
+  const now = new Date();
   const nowIso = isoNow();
   const { rows } = await getLeadsTable();
 
-  // Enviar pocos por tick para evitar picos
+  // Respetar la misma ventana horaria que WhatsApp
+  const h = now.getHours();
+  if (h < cfg.SEND_WINDOW_START || h >= cfg.SEND_WINDOW_END) return;
+
+  // WhatsApp enviados hoy (MSG1)
+  const msg1Today = rows.filter(r => r.msg1_sid && isTodayIso(r.last_outbound_at)).length;
+
+  // Email1 enviados hoy
+  const email1Today = email1SentTodayCount(rows);
+
+  // ✅ Cupo de Email1 hoy = no superar los MSG1 de hoy
+  const remainingToday = Math.max(0, msg1Today - email1Today);
+
+  console.log("[email-sync]",
+    "msg1Today=", msg1Today,
+    "email1Today=", email1Today,
+    "remainingEmail1Today=", remainingToday
+  );
+
+  if (remainingToday <= 0) return;
+
+  // ✅ SOLO “catch-up” de leads que YA recibieron WhatsApp Día 1
+  // y aún no tienen Email1 enviado.
   const due = rows
     .filter(r => String(r.stop_all || "").toUpperCase() !== "TRUE")
-    .filter(r => r.email && (r.email_status === "EMAIL_NEW" || !r.email_status))
+    .filter(r => r.email)
+    .filter(r => r.status === "MSG1_SENT" || String(r.msg1_sid || "").trim()) // ya tuvo WhatsApp D1
+    .filter(r => !r.email_status || r.email_status === "EMAIL_NEW") // no mandado Email1 aún
     .filter(r => !r.email_next_send_at || r.email_next_send_at <= nowIso)
-    .slice(0, 3);
+    .slice(0, Math.min(remainingToday, 3)); // cap por tick
 
   for (const lead of due) {
     try {
