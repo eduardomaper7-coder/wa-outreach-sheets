@@ -64,7 +64,7 @@ app.post("/webhooks/inbound", async (req, res) => {
     await updateRow("Leads", rowNumber, updated);
   }
 
-  res.status(200).send("ok");
+  res.status(200).type("text/xml").send("<Response></Response>");
 });
 
 // STATUS callback: si falla → marca ERROR (simple)
@@ -94,7 +94,7 @@ app.post("/webhooks/status", async (req, res) => {
     }
   }
 
-  res.status(200).send("ok");
+  res.status(200).type("text/xml").send("<Response></Response>");
 });
 
 app.get("/health", (req, res) => res.json({ ok: true }));
@@ -108,13 +108,7 @@ app.get("/admin/scrape", async (req, res) => {
   await dailyScrape();
   res.send("scrape ok");
 });
-app.get("/admin/force-send", async (req, res) => {
-  const { processNewLeadsPaced } = require("./engine");
 
-  await processNewLeadsPaced();
-
-  res.send("Force send executed");
-});
 
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;
