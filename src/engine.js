@@ -20,14 +20,25 @@ async function getLeadsTable() {
   const values = await readRange("Leads!A:Z");
   if (values.length < 1) return { header: [], rows: [] };
 
-  const header = values[0];
+  // Normalizamos los encabezados: quitamos espacios y pasamos a minúsculas
+  // Esto evita que "Email " o "EMAIL" rompan la lógica de lead.email
+  const rawHeader = values[0];
+  const header = rawHeader.map(h => String(h).trim().toLowerCase());
+
   const rows = values.slice(1).map((row, idx) => {
     const obj = {};
-    header.forEach((h, i) => obj[h] = row[i] ?? "");
-    // rowNumber en sheet (1-based). +2 porque: header=1, primera fila de datos=2
+    header.forEach((h, i) => {
+      // Mapeamos el valor de la celda a la llave normalizada
+      obj[h] = row[i] ?? "";
+    });
+    
+    // Guardamos el número de fila real para las actualizaciones (updateRow)
     obj.__rowNumber = idx + 2;
     return obj;
   });
+
+  // Log de diagnóstico para consola
+  console.log(`[sheets] Tabla cargada: ${rows.length} leads. Columnas detectadas: ${header.join(', ')}`);
 
   return { header, rows };
 }
@@ -400,30 +411,27 @@ const { scrapeEmailFromWebsite } = require("./emailExtractor");
 
 async function enrichExistingLeadsEmails() {
   const { rows } = await getLeadsTable();
+  console.log(`[enrich] Analizando ${rows.length} filas...`);
 
   for (const lead of rows) {
-    if (
-      !lead.email &&
-      lead.website &&
-      String(lead.stop_all || "").toUpperCase() !== "TRUE"
-    ) {
-      console.log("[enrich] buscando email en", lead.website);
-
-      try {
-        const email = await scrapeEmailFromWebsite(lead.website);
-
-        if (email) {
-          lead.email = email;
-          await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
-          console.log("[enrich] encontrado:", email);
-        }
-      } catch (e) {
-        console.log("[enrich] error:", e.message);
-      }
+    // LOG DE CONTROL
+    if (!lead.email && lead.website) {
+       console.log(`[enrich] Intentando con: ${lead.business_name} | Web: ${lead.website}`);
+       try {
+         const email = await scrapeEmailFromWebsite(lead.website);
+         if (email) {
+           lead.email = email;
+           await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
+           console.log("[enrich] ✅ Guardado:", email);
+         } else {
+           console.log("[enrich] ❌ No se encontró email en la web.");
+         }
+       } catch (e) {
+         console.error("[enrich] Error en fetch:", e.message);
+       }
     }
   }
-
-  console.log("[enrich] terminado");
+  console.log("[enrich] proceso finalizado.");
 }
 // --- Scheduler
 function startEngine() {
