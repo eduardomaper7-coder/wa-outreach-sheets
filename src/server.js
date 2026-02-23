@@ -202,19 +202,19 @@ app.get("/admin/import-dataset", async (req, res) => {
     const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
     const rows = values.slice(1);
 
-    const idxPhone = header.indexOf("whatsapp_e164");        // D
-    const idxEmail = header.indexOf("email");                // O
-    const idxWebsite = header.indexOf("website");            // H
-    const idxEmailStatus = header.indexOf("email_status");   // R
+    const idxPhone = header.indexOf("whatsapp_e164");         // D
+    const idxEmail = header.indexOf("email");                 // O
+    const idxWebsite = header.indexOf("website");             // H
+    const idxEmailStatus = header.indexOf("email_status");    // R
     const idxEmailNext = header.indexOf("email_next_send_at");// T
 
     if (idxPhone < 0 && idxEmail < 0) {
       return res.status(500).send("No se encontraron columnas whatsapp_e164 ni email en Leads.");
     }
 
-    // Mapas para buscar rápido
-    const phoneMap = new Map(); // e164 -> rowIndex
-    const emailMap = new Map(); // email -> rowIndex
+    // Mapas para buscar rápido (SOLO para filas ya existentes en el Sheet)
+    const phoneMap = new Map(); // e164 -> rowIndex (0-based sobre rows)
+    const emailMap = new Map(); // email -> rowIndex (0-based sobre rows)
 
     rows.forEach((r, index) => {
       const p = idxPhone >= 0 ? String(r[idxPhone] || "").trim() : "";
@@ -243,11 +243,19 @@ app.get("/admin/import-dataset", async (req, res) => {
     let updatedCount = 0;
     const hoy = new Date().toISOString();
 
+    // ✅ NUEVO: evita duplicados dentro del MISMO dataset/import
+    const seenPhones = new Set();
+    const seenEmails = new Set();
+
     for (const x of items) {
-      const e164 = toE164Spain(x.phone || x.phoneUnformatted || (Array.isArray(x.phones) ? x.phones[0] : ""));
+      const e164 = toE164Spain(
+        x.phone || x.phoneUnformatted || (Array.isArray(x.phones) ? x.phones[0] : "")
+      );
+
       // ✅ emails viene como array "emails"
       const foundEmailRaw = (Array.isArray(x.emails) && x.emails[0]) || x.email || "";
       const foundEmail = String(foundEmailRaw || "").trim().toLowerCase();
+
       const foundWeb = x.website || "";
 
       const hasEmail = foundEmail.includes("@");
@@ -255,6 +263,16 @@ app.get("/admin/import-dataset", async (req, res) => {
 
       // si no hay ni phone ni email, skip
       if (!hasPhone && !hasEmail) continue;
+
+      // ✅ NUEVO: dedupe dentro del dataset para que no reviente (ni duplique inserts)
+      if (hasPhone) {
+        if (seenPhones.has(e164)) continue;
+        seenPhones.add(e164);
+      }
+      if (hasEmail) {
+        if (seenEmails.has(foundEmail)) continue;
+        seenEmails.add(foundEmail);
+      }
 
       // ✅ 1) MATCH POR EMAIL (PRIORIDAD)
       if (hasEmail && idxEmail >= 0 && emailMap.has(foundEmail)) {
@@ -343,8 +361,8 @@ app.get("/admin/import-dataset", async (req, res) => {
         "", "", "", ""              // U-X: Ids y Replies
       ]);
 
-      phoneMap.set(e164, -1);
-      if (hasEmail) emailMap.set(foundEmail, -1);
+      // ❌ IMPORTANTE: NO pongas phoneMap/emailMap con -1/true aquí.
+      // Eso es lo que te rompía el import cuando se repetía un phone/email en el mismo dataset.
     }
 
     // 4) Insertar los nuevos leads en bloques
@@ -359,7 +377,6 @@ app.get("/admin/import-dataset", async (req, res) => {
     }
 
     res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} enriquecidos/mergeados.`);
-
   } catch (err) {
     console.error("[import] Error:", err);
     res.status(500).send(`Error: ${err.message}`);
