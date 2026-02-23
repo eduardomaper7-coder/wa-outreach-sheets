@@ -51,14 +51,14 @@ function rowFromLeadObj(lead) {
     lead.whatsapp_e164 || "",         // D
     lead.google_reviews || "",        // E
     lead.google_rating || "",         // F
-    lead.source || "",                // G
-    lead.status || "",                // H
-    lead.last_outbound_at || "",      // I
-    lead.next_send_at || "",          // J
-    lead.msg1_sid || "",              // K
-    lead.msg2_sid || "",              // L
-    lead.msg3_sid || "",              // M
-    lead.email || "",                 // N
+    lead.website || "",               // G (NUEVA: Web real)
+    lead.source || "",                // H (Antes era G: Link de Google Maps)
+    lead.status || "",                // I
+    lead.last_outbound_at || "",      // J
+    lead.next_send_at || "",          // K
+    lead.msg1_sid || "",              // L
+    lead.msg2_sid || "",              // M
+    lead.email || "",                 // N (Email sigue en su sitio)
     lead.stop_all || "",              // O
     lead.stop_reason || "",           // P
     lead.email_status || "",          // Q
@@ -413,29 +413,24 @@ async function enrichExistingLeadsEmails() {
   console.log(`[enrich] Analizando ${rows.length} filas...`);
 
   for (const lead of rows) {
-    // FIX: Usamos 'source' porque en tu Sheet la URL está en esa columna
-    const urlParaScrapear = lead.source || lead.website;
+    // Usamos la columna website que ahora existe
+    const url = lead.website;
 
-    if (
-      !lead.email && 
-      urlParaScrapear && 
-      String(lead.stop_all || "").toUpperCase() !== "TRUE"
-    ) {
-      console.log(`[enrich] Buscando en: ${lead.business_name} -> ${urlParaScrapear}`);
+    if (!lead.email && url && url.includes("http") && !url.includes("google.com")) {
+      console.log(`[enrich] Buscando email en web real: ${url}`);
 
       try {
-        const email = await scrapeEmailFromWebsite(urlParaScrapear);
+        const email = await scrapeEmailFromWebsite(url);
 
         if (email) {
           lead.email = email;
-          // Esto ahora escribirá el email en la columna N correctamente
           await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
-          console.log(`[enrich] ✅ Guardado: ${email}`);
+          console.log(`[enrich] ✅ EMAIL ENCONTRADO: ${email}`);
         } else {
-          console.log(`[enrich] ❌ No se halló email en: ${urlParaScrapear}`);
+          console.log(`[enrich] ❌ No se encontró email en la web.`);
         }
       } catch (e) {
-        console.error(`[enrich] Error en fila ${lead.__rowNumber}:`, e.message);
+        console.log(`[enrich] Error visitando ${url}: ${e.message}`);
       }
     }
   }

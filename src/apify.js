@@ -43,11 +43,12 @@ async function scrapeZone(zone) {
 
   const leads = await Promise.all(
     items.map(async (x) => {
-      const website = x.website || x.url || "";
+      // Priorizamos la web real del negocio
+      const website = x.website || ""; 
       let email = x.email || "";
 
-      // 👇 Si no viene email desde Apify, lo intentamos extraer de la web
-      if (!email && website) {
+      // Si tenemos web pero no email, intentamos extraerlo en el momento del scrapeo
+      if (!email && website && website.includes("http")) {
         email = await scrapeEmailFromWebsite(website);
       }
 
@@ -57,7 +58,7 @@ async function scrapeZone(zone) {
         whatsapp_e164: toE164Spain(x.phone || ""),
         google_reviews: x.reviewsCount ?? null,
         google_rating: x.totalScore ?? null,
-        website,
+        website: website, // <--- Ahora se guarda la web real
         email: email || "",
         source: x.url || "apify",
       };
