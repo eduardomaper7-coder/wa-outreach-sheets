@@ -189,30 +189,29 @@ app.get("/admin/scrape", async (req, res) => {
 });
 
 app.get("/admin/import-dataset", async (req, res) => {
-  // Acepta el ID tanto de la URL como de la query (?datasetId=...)
   const datasetId = req.query.datasetId || req.params.datasetId;
   console.log(`[import] Intentando bajar dataset: ${datasetId}`);
 
   if (!datasetId) return res.status(400).send("Falta el ID del dataset");
 
   try {
-    // 1) Cargar datos existentes para comparar (NORMALIZANDO HEADERS)
+    // 1) Cargar Leads existentes
     const values = await readRange("Leads!A:Z");
     const rawHeader = values[0] || [];
     const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
     const rows = values.slice(1);
 
-    const idxPhone = header.indexOf("whatsapp_e164");         // D
-    const idxEmail = header.indexOf("email");                 // O
-    const idxWebsite = header.indexOf("website");             // H
-    const idxEmailStatus = header.indexOf("email_status");    // R
-    const idxEmailNext = header.indexOf("email_next_send_at");// T
+    const idxPhone = header.indexOf("whatsapp_e164");          // D
+    const idxEmail = header.indexOf("email");                  // O
+    const idxWebsite = header.indexOf("website");              // H
+    const idxEmailStatus = header.indexOf("email_status");     // R
+    const idxEmailNext = header.indexOf("email_next_send_at"); // T
 
     if (idxPhone < 0 && idxEmail < 0) {
       return res.status(500).send("No se encontraron columnas whatsapp_e164 ni email en Leads.");
     }
 
-    // Mapas para buscar rápido (SOLO para filas ya existentes en el Sheet)
+    // Mapas para buscar rápido en filas existentes del sheet
     const phoneMap = new Map(); // e164 -> rowIndex (0-based sobre rows)
     const emailMap = new Map(); // email -> rowIndex (0-based sobre rows)
 
@@ -234,37 +233,65 @@ app.get("/admin/import-dataset", async (req, res) => {
 
     const items = await resp.json();
     console.log("[import] items:", Array.isArray(items) ? items.length : typeof items);
-    console.log("[import] sample item keys:", items?.[0] ? Object.keys(items[0]) : "NO ITEMS");
-    console.log("[import] sample item:", items?.[0] || "NO ITEMS");
     if (!Array.isArray(items)) return res.status(500).send("Apify no devolvió una lista.");
 
-    // 3) Procesar Items
+    // 3) Helpers
+    const hoy = new Date().toISOString();
     const rowsToInsert = [];
     let updatedCount = 0;
-    const hoy = new Date().toISOString();
 
-    // ✅ NUEVO: evita duplicados dentro del MISMO dataset/import
+    // ✅ Evitar duplicados dentro del dataset
     const seenPhones = new Set();
     const seenEmails = new Set();
 
+    // ✅ Acumular updates por fila (para 1 batch write)
+    // key = rowNumber (1-based), value = rowValues completo A:Z
+    const pendingRowUpdates = new Map();
+
+    function ensureRowWidth(row, width) {
+      const out = Array.isArray(row) ? [...row] : [];
+      while (out.length < width) out.push("");
+      return out;
+    }
+
+    function setIfEmpty(row, idx, value) {
+      if (idx < 0) return false;
+      const cur = String(row[idx] || "").trim();
+      if (!cur && value) {
+        row[idx] = value;
+        return true;
+      }
+      return false;
+    }
+
+    function setAlways(row, idx, value) {
+      if (idx < 0) return false;
+      row[idx] = value;
+      return true;
+    }
+
+    function queueRowUpdate(rowIndex0Based, updatedRow) {
+      const rowNumber = rowIndex0Based + 2; // + header row
+      pendingRowUpdates.set(rowNumber, updatedRow);
+    }
+
+    // 4) Procesar items
     for (const x of items) {
       const e164 = toE164Spain(
         x.phone || x.phoneUnformatted || (Array.isArray(x.phones) ? x.phones[0] : "")
       );
 
-      // ✅ emails viene como array "emails"
       const foundEmailRaw = (Array.isArray(x.emails) && x.emails[0]) || x.email || "";
       const foundEmail = String(foundEmailRaw || "").trim().toLowerCase();
 
-      const foundWeb = x.website || "";
+      const foundWeb = String(x.website || "").trim();
 
       const hasEmail = foundEmail.includes("@");
       const hasPhone = !!e164;
 
-      // si no hay ni phone ni email, skip
       if (!hasPhone && !hasEmail) continue;
 
-      // ✅ NUEVO: dedupe dentro del dataset para que no reviente (ni duplique inserts)
+      // Dedupe dentro del dataset
       if (hasPhone) {
         if (seenPhones.has(e164)) continue;
         seenPhones.add(e164);
@@ -274,109 +301,128 @@ app.get("/admin/import-dataset", async (req, res) => {
         seenEmails.add(foundEmail);
       }
 
-      // ✅ 1) MATCH POR EMAIL (PRIORIDAD)
+      // ✅ 1) MATCH POR EMAIL
       if (hasEmail && idxEmail >= 0 && emailMap.has(foundEmail)) {
         const rowIndex = emailMap.get(foundEmail);
-        const currentRow = rows[rowIndex];
-        const rowNumber = rowIndex + 2;
+        const current = ensureRowWidth(rows[rowIndex], 26);
 
-        // Si el lead por email NO tiene phone y ahora lo traemos, lo metemos
-        if (hasPhone && idxPhone >= 0 && !String(currentRow[idxPhone] || "").trim()) {
-          console.log(`[import] Match por EMAIL. Añadiendo teléfono ${e164} a ${foundEmail}`);
-          await updateCell("Leads", rowNumber, idxPhone + 1, e164);
-          phoneMap.set(e164, rowIndex); // para futuras iteraciones
+        let changed = false;
+
+        // añadir phone si falta
+        if (hasPhone && idxPhone >= 0) {
+          changed = setIfEmpty(current, idxPhone, e164) || changed;
+          if (changed) phoneMap.set(e164, rowIndex);
         }
 
-        // Si no tenía website, lo completamos
-        if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
-          await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
+        // completar website si falta
+        if (idxWebsite >= 0) {
+          changed = setIfEmpty(current, idxWebsite, foundWeb) || changed;
         }
 
-        // Ya existe: no insertamos
+        if (changed) {
+          rows[rowIndex] = current;
+          queueRowUpdate(rowIndex, current);
+          updatedCount++;
+        }
+
         continue;
       }
 
-      // ✅ 2) MATCH POR TELÉFONO
+      // ✅ 2) MATCH POR PHONE
       if (hasPhone && idxPhone >= 0 && phoneMap.has(e164)) {
         const rowIndex = phoneMap.get(e164);
-        const currentRow = rows[rowIndex];
-        const rowNumber = rowIndex + 2;
+        const current = ensureRowWidth(rows[rowIndex], 26);
 
-        // Si existe pero NO tiene email, lo actualizamos
-        if (hasEmail && idxEmail >= 0 && !String(currentRow[idxEmail] || "").trim()) {
-          console.log(`[import] Match por PHONE. Enriqueciendo ${e164} con email ${foundEmail}`);
+        let changed = false;
 
-          // Website si viene y falta
-          if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
-            await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
+        // completar website si falta
+        if (idxWebsite >= 0) {
+          changed = setIfEmpty(current, idxWebsite, foundWeb) || changed;
+        }
+
+        // completar email si falta
+        if (hasEmail && idxEmail >= 0) {
+          const before = String(current[idxEmail] || "").trim();
+          if (!before) {
+            changed = setAlways(current, idxEmail, foundEmail) || changed;
+
+            // set email_status / next_send_at
+            if (idxEmailStatus >= 0) changed = setAlways(current, idxEmailStatus, "EMAIL_NEW") || changed;
+            if (idxEmailNext >= 0) changed = setAlways(current, idxEmailNext, hoy) || changed;
+
+            emailMap.set(foundEmail, rowIndex);
           }
+        }
 
-          // Email
-          await updateCell("Leads", rowNumber, idxEmail + 1, foundEmail);
-
-          // Estados email
-          if (idxEmailStatus >= 0) await updateCell("Leads", rowNumber, idxEmailStatus + 1, "EMAIL_NEW");
-          if (idxEmailNext >= 0) await updateCell("Leads", rowNumber, idxEmailNext + 1, hoy);
-
-          // para futuras iteraciones
-          emailMap.set(foundEmail, rowIndex);
+        if (changed) {
+          rows[rowIndex] = current;
+          queueRowUpdate(rowIndex, current);
           updatedCount++;
-        } else {
-          // aunque ya tenga email, si falta website, lo completamos
-          if (idxWebsite >= 0 && foundWeb && !String(currentRow[idxWebsite] || "").trim()) {
-            await updateCell("Leads", rowNumber, idxWebsite + 1, foundWeb);
-          }
         }
 
         continue;
       }
 
-      // ✅ 3) NO EXISTE -> INSERT NUEVO
-      // Mantengo tu comportamiento: solo insertamos si hay teléfono.
+      // ✅ 3) NO EXISTE -> INSERT NUEVO (mantienes: solo insert si hay teléfono)
       if (!hasPhone) continue;
 
       const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
 
       rowsToInsert.push([
-        lead_id,                    // A: lead_id
-        x.title || "",              // B: business_name
-        x.city || "Getafe",         // C: zone
-        e164,                       // D: whatsapp_e164
-        x.reviewsCount ?? "",       // E: google_reviews
-        x.totalScore ?? "",         // F: google_rating
-        x.url || "apify",           // G: source
-        foundWeb,                   // H: website
-        "NEW",                      // I: status (WA)
-        "",                         // J: last_outbound_at
-        hoy,                        // K: next_send_at (WA D0)
-        "",                         // L: msg1_sid
-        "",                         // M: msg2_sid
-        "",                         // N: msg3_sid
-        hasEmail ? foundEmail : "", // O: email
-        "FALSE",                    // P: stop_all
-        "",                         // Q: stop_reason
-        hasEmail ? "EMAIL_NEW" : "",// R: email_status
-        "",                         // S: email_last_outbound_at
-        hasEmail ? hoy : "",        // T: email_next_send_at
-        "", "", "", ""              // U-X: Ids y Replies
+        lead_id,                    // A
+        x.title || "",              // B
+        x.city || "Getafe",         // C
+        e164,                       // D
+        x.reviewsCount ?? "",       // E
+        x.totalScore ?? "",         // F
+        x.url || "apify",           // G
+        foundWeb,                   // H
+        "NEW",                      // I
+        "",                         // J
+        hoy,                        // K
+        "",                         // L
+        "",                         // M
+        "",                         // N
+        hasEmail ? foundEmail : "", // O
+        "FALSE",                    // P
+        "",                         // Q
+        hasEmail ? "EMAIL_NEW" : "",// R
+        "",                         // S
+        hasEmail ? hoy : "",        // T
+        "", "", "", ""              // U-X
       ]);
-
-      // ❌ IMPORTANTE: NO pongas phoneMap/emailMap con -1/true aquí.
-      // Eso es lo que te rompía el import cuando se repetía un phone/email en el mismo dataset.
     }
 
-    // 4) Insertar los nuevos leads en bloques
+    // 5) ✅ Hacer batch update de filas existentes (MUY pocas requests)
+    // Necesitas batchUpdateRows en sheets.js
+    const { batchUpdateRows } = require("./sheets");
+
+    if (pendingRowUpdates.size > 0) {
+      const all = Array.from(pendingRowUpdates.entries()).map(([rowNumber, values]) => ({
+        rowNumber,
+        values,
+      }));
+
+      // Enviar en chunks para no hacer un request gigante
+      const CHUNK_UPDATES = 200; // 200 filas por batch (1 request)
+      for (let i = 0; i < all.length; i += CHUNK_UPDATES) {
+        const chunk = all.slice(i, i + CHUNK_UPDATES);
+        await batchUpdateRows("Leads", chunk);
+      }
+    }
+
+    // 6) Insertar nuevos (append en bloques)
     let imported = 0;
     if (rowsToInsert.length > 0) {
-      const CHUNK = 40;
-      for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
-        const chunk = rowsToInsert.slice(i, i + CHUNK);
+      const CHUNK_INSERT = 200; // sube a 200 para menos requests
+      for (let i = 0; i < rowsToInsert.length; i += CHUNK_INSERT) {
+        const chunk = rowsToInsert.slice(i, i + CHUNK_INSERT);
         await appendRows("Leads", chunk);
         imported += chunk.length;
       }
     }
 
-    res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} enriquecidos/mergeados.`);
+    res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} actualizados (batch).`);
   } catch (err) {
     console.error("[import] Error:", err);
     res.status(500).send(`Error: ${err.message}`);
