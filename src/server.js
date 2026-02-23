@@ -108,6 +108,13 @@ app.get("/admin/scrape", async (req, res) => {
   await dailyScrape();
   res.send("scrape ok");
 });
+app.get("/admin/force-send", async (req, res) => {
+  const { processNewLeadsPaced } = require("./engine");
+
+  await processNewLeadsPaced();
+
+  res.send("Force send executed");
+});
 
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;

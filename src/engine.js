@@ -224,6 +224,10 @@ function startEngine() {
   });
 }
 
-module.exports = { startEngine, dailyScrape, upsertLeadByPhone };
-
-
+module.exports = {
+  startEngine,
+  dailyScrape,
+  upsertLeadByPhone,
+  processNewLeadsPaced,
+  processDueFollowups,
+};
