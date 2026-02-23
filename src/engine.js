@@ -414,24 +414,27 @@ async function enrichExistingLeadsEmails() {
   console.log(`[enrich] Analizando ${rows.length} filas...`);
 
   for (const lead of rows) {
-    // LOG DE CONTROL
-    if (!lead.email && lead.website) {
-       console.log(`[enrich] Intentando con: ${lead.business_name} | Web: ${lead.website}`);
-       try {
-         const email = await scrapeEmailFromWebsite(lead.website);
-         if (email) {
-           lead.email = email;
-           await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
-           console.log("[enrich] ✅ Guardado:", email);
-         } else {
-           console.log("[enrich] ❌ No se encontró email en la web.");
-         }
-       } catch (e) {
-         console.error("[enrich] Error en fetch:", e.message);
-       }
+    // --- LOG DE DEBUG ---
+    // Esto nos dirá qué ve el código exactamente en cada fila
+    if (lead.__rowNumber < 15) { // Solo logueamos las primeras para no saturar
+        console.log(`Fila ${lead.__rowNumber}: email=[${lead.email}], website=[${lead.website}], stop=[${lead.stop_all}]`);
+    }
+
+    if (!lead.email && lead.website && String(lead.stop_all || "").toUpperCase() !== "TRUE") {
+      console.log("[enrich] Buscando email para:", lead.business_name, "en", lead.website);
+      try {
+        const email = await scrapeEmailFromWebsite(lead.website);
+        if (email) {
+          lead.email = email;
+          await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
+          console.log("[enrich] ✅ Encontrado y guardado:", email);
+        }
+      } catch (e) {
+        console.log("[enrich] Error en sitio:", lead.website, e.message);
+      }
     }
   }
-  console.log("[enrich] proceso finalizado.");
+  console.log("[enrich] proceso terminado.");
 }
 // --- Scheduler
 function startEngine() {
