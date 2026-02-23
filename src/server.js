@@ -242,12 +242,10 @@ app.get("/admin/import-dataset", async (req, res) => {
     const hoy = new Date().toISOString();
 
     for (const x of items) {
-      const e164 = toE164Spain(x.phone || "");
-
-      // Email y web desde posibles campos de Apify
-      const foundEmailRaw =
-        x.email || (x.contactInfo && x.contactInfo.emails && x.contactInfo.emails[0]) || "";
-      const foundEmail = String(foundEmailRaw).trim().toLowerCase();
+      const e164 = toE164Spain(x.phone || x.phoneUnformatted || (Array.isArray(x.phones) ? x.phones[0] : ""));
+      // ✅ emails viene como array "emails"
+      const foundEmailRaw = (Array.isArray(x.emails) && x.emails[0]) || x.email || "";
+      const foundEmail = String(foundEmailRaw || "").trim().toLowerCase();
       const foundWeb = x.website || "";
 
       const hasEmail = foundEmail.includes("@");
