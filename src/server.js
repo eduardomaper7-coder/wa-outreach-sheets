@@ -356,3 +356,27 @@ app.get("/admin/force-send", async (req, res) => {
     res.status(500).send(String(e?.message || e));
   }
 });
+
+// ENDPOINT PARA RESPONDER MANUALMENTE DESDE EL NAVEGADOR
+app.get("/admin/reply", async (req, res) => {
+  const { to, msg } = req.query;
+  
+  if (!to || !msg) {
+    return res.send("Error: Faltan parámetros. Uso: /admin/reply?to=346XXXXXX&msg=Tu mensaje");
+  }
+
+  try {
+    const client = require("twilio")(cfg.TWILIO_ACCOUNT_SID, cfg.TWILIO_AUTH_TOKEN);
+    
+    await client.messages.create({
+      from: `whatsapp:${cfg.TWILIO_WHATSAPP_NUMBER}`,
+      to: `whatsapp:${to}`,
+      body: msg
+    });
+
+    res.send(`✅ Mensaje enviado con éxito a ${to}.<br><br><b>Mensaje:</b> ${msg}`);
+  } catch (e) {
+    console.error("Error al enviar respuesta manual:", e);
+    res.status(500).send("Error de Twilio: " + e.message);
+  }
+});
