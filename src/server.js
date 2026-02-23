@@ -177,3 +177,58 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
 
   res.send(`Imported ${imported} new leads (skipped duplicates)`);
 });
+
+app.get("/admin/force-send", async (req, res) => {
+  try {
+    console.log("[force-send] start");
+
+    const { readRange, updateRow } = require("./sheets");
+    const { sendTemplate } = require("./twilio");
+    const { computeNextSendFrom } = require("./utils");
+    const cfg = require("./config");
+
+    const values = await readRange("Leads!A:M");
+    const header = values[0] || [];
+    const rows = values.slice(1);
+
+    const idxStatus = header.indexOf("status");
+    const idxPhone  = header.indexOf("whatsapp_e164");
+    const idxReviews = header.indexOf("google_reviews");
+    const idxLast = header.indexOf("last_outbound_at");
+    const idxNext = header.indexOf("next_send_at");
+    const idxSid1 = header.indexOf("msg1_sid");
+
+    const i = rows.findIndex(r => String(r[idxStatus] || "") === "NEW" && String(r[idxPhone] || "").trim());
+    if (i === -1) return res.status(404).send("No NEW leads found");
+
+    const rowNumber = i + 2;
+    const toE164 = String(rows[i][idxPhone]).trim();
+    const reviews = String(rows[i][idxReviews] || "");
+
+    console.log("[force-send] sending to", toE164, "row", rowNumber);
+    console.log("[force-send] TPL_MSG1_SID", cfg.TPL_MSG1_SID);
+
+    const msg = await sendTemplate({
+      toE164,
+      contentSid: cfg.TPL_MSG1_SID,
+      variables: { "1": reviews },
+      statusCallbackUrl: `${cfg.PUBLIC_BASE_URL}/webhooks/status`,
+    });
+
+    const sentAt = new Date().toISOString();
+    const next = computeNextSendFrom(sentAt, 48, cfg);
+
+    rows[i][idxStatus] = "MSG1_SENT";
+    rows[i][idxLast] = sentAt;
+    rows[i][idxNext] = next;
+    rows[i][idxSid1] = msg.sid;
+
+    await updateRow("Leads", rowNumber, rows[i]);
+
+    console.log("[force-send] ok sid", msg.sid);
+    res.send(`OK sent to ${toE164} sid=${msg.sid}`);
+  } catch (e) {
+    console.error("[force-send] ERROR", e);
+    res.status(500).send(String(e?.message || e));
+  }
+});
