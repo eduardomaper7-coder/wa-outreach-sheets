@@ -14,7 +14,17 @@ const upload = multer(); // para SendGrid Inbound Parse (multipart/form-data)
 
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+const { enrichExistingLeadsEmails } = require("./engine");
 
+app.get("/test-enrich", async (req, res) => {
+  try {
+    await enrichExistingLeadsEmails();
+    res.send("Enrich terminado");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error en enrich");
+  }
+});
 function validateTwilioRequest(req) {
   // Si lo quieres activar 100%: usa validateRequest con tu PUBLIC_BASE_URL
   // (si falla por proxy/railway headers, lo desactivas o lo ajustas)
@@ -168,7 +178,6 @@ app.post("/webhooks/status", async (req, res) => {
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 startEngine();
-enrichExistingLeadsEmails().catch(console.error);
 app.listen(cfg.PORT, () => console.log(`Listening on ${cfg.PORT}`));
 
 app.get("/admin/scrape", async (req, res) => {
