@@ -73,77 +73,71 @@ function rowFromLeadObj(lead) {
 
 async function upsertLeadByPhone(newLead) {
   const { rows } = await getLeadsTable();
-  const existing = rows.find(r => r.whatsapp_e164 === newLead.whatsapp_e164);
+  // Buscamos si el teléfono ya existe en nuestra lista
+  const existing = rows.find(r => String(r.whatsapp_e164 || "").trim() === String(newLead.whatsapp_e164).trim());
+  const hoy = isoNow();
 
+  // --- CASO 1: EL LEAD NO EXISTE (ES NUEVO) ---
   if (!existing) {
-    // lead_id simple: timestamp+rand
     const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
     const lead = {
       lead_id,
       ...newLead,
-
-      // --- WhatsApp (existente)
+      // WhatsApp: Día 1
       status: "NEW",
       last_outbound_at: "",
-      next_send_at: "",
+      next_send_at: hoy, 
       msg1_sid: "",
       msg2_sid: "",
       msg3_sid: "",
-
-      // --- Email + stop global (N..W)
-      email: newLead.email || "",
-      stop_all: "",
+      // Email: Día 1
+      stop_all: "FALSE",
       stop_reason: "",
       email_status: "EMAIL_NEW",
       email_last_outbound_at: "",
-      email_next_send_at: "",
+      email_next_send_at: hoy,
       email1_id: "",
       email2_id: "",
       email3_id: "",
       email_reply_at: "",
     };
 
+    console.log(`[engine] Insertando nuevo lead: ${newLead.business_name}`);
     await appendRow("Leads", rowFromLeadObj(lead));
     return { action: "insert" };
   }
 
-  // si ya existe, actualiza datos “enriquecibles” sin pisar estado si ya está en conversación
-  const keepStatus = existing.status && existing.status !== "NEW";
-
-  // Si ya lo paraste o ya respondió, NO reactivarlo jamás al re-scrapear
-  const alreadyStopped =
-    String(existing.stop_all || "").toUpperCase() === "TRUE" ||
-    existing.status === "REPLIED" ||
-    existing.status === "STOPPED";
+  // --- CASO 2: EL LEAD YA EXISTE (ENRIQUECIMIENTO) ---
+  
+  // Detectamos si antes NO tenía email y AHORA sí nos llega uno de Apify
+  // Esto es lo que evita el "No hay leads nuevos" y rellena los huecos.
+  const hadNoEmail = !existing.email || existing.email.trim() === "";
+  const hasNewEmail = newLead.email && newLead.email.trim() !== "";
+  const shouldActivateEmail = hadNoEmail && hasNewEmail;
 
   const merged = {
     ...existing,
-
-    // --- enrichment "seguro"
+    // Actualizamos datos básicos si vienen del nuevo scrapeo
     business_name: newLead.business_name || existing.business_name,
     zone: newLead.zone || existing.zone,
     google_reviews: newLead.google_reviews ?? existing.google_reviews,
     google_rating: newLead.google_rating ?? existing.google_rating,
+    website: newLead.website || existing.website,
     source: newLead.source || existing.source,
-
-    // --- email: si llega uno nuevo y el existente está vacío, lo rellenamos
+    
+    // Si llega un email nuevo, lo guardamos
     email: newLead.email || existing.email,
 
-    // --- estados
-    status: alreadyStopped ? existing.status : (keepStatus ? existing.status : "NEW"),
-
-    // --- mantener stop/email state si ya existe
-    stop_all: existing.stop_all || "",
-    stop_reason: existing.stop_reason || "",
-    email_status: existing.email_status || "EMAIL_NEW",
-    email_last_outbound_at: existing.email_last_outbound_at || "",
-    email_next_send_at: existing.email_next_send_at || "",
-    email1_id: existing.email1_id || "",
-    email2_id: existing.email2_id || "",
-    email3_id: existing.email3_id || "",
-    email_reply_at: existing.email_reply_at || "",
+    // SI ACTIVAMOS EMAIL: Ponemos estado NEW y fecha de hoy para que el cron lo envíe
+    email_status: shouldActivateEmail ? "EMAIL_NEW" : (existing.email_status || "EMAIL_NEW"),
+    email_next_send_at: shouldActivateEmail ? hoy : (existing.email_next_send_at || ""),
+    
+    // No tocamos el status de WhatsApp si ya estaba en marcha (a menos que fuera NEW)
+    status: existing.status || "NEW",
+    stop_all: existing.stop_all || "FALSE"
   };
 
+  console.log(`[engine] Actualizando lead existente${shouldActivateEmail ? " con NUEVO EMAIL" : ""}: ${merged.business_name}`);
   await updateRow("Leads", existing.__rowNumber, rowFromLeadObj(merged));
   return { action: "update" };
 }
@@ -160,32 +154,46 @@ async function dailyScrape() {
 
 // --- 2) ENVÍO de nuevos repartido (WhatsApp MSG1)
 async function sendMsg1(lead) {
+  // 1. Enviamos el template de WhatsApp (Día 1)
   const msg = await sendTemplate({
     toE164: lead.whatsapp_e164,
     contentSid: cfg.TPL_MSG1_SID,
-    variables: { "1": String(lead.google_reviews || "") },
+    variables: { 
+      "1": String(lead.google_reviews || "0") 
+    },
     statusCallbackUrl: statusCallbackUrl(),
   });
 
   const sentAt = isoNow();
-  const next = computeNextSendFrom(sentAt, 48, cfg);
+  
+  // 2. Calculamos el próximo envío: Hoy + 48 horas = Día 3
+  // Esto hace que el sistema ignore este lead el Día 2 y lo retome el Día 3.
+  const nextDate = addHoursIso(sentAt, 48);
 
+  // 3. Actualizamos el objeto lead con los nuevos datos
   lead.status = "MSG1_SENT";
   lead.last_outbound_at = sentAt;
-  lead.next_send_at = next;
+  lead.next_send_at = nextDate; // Programado para el Día 3
   lead.msg1_sid = msg.sid;
 
+  // 4. Guardamos los cambios en la Google Sheet
+  console.log(`[engine] WhatsApp MSG1 enviado a ${lead.business_name}. Próximo WA: ${nextDate}`);
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
 
 // --- EMAILS (D0, +24h, +72h)
 async function sendEmail1(lead) {
-  if (!lead.email) return;
+  if (!lead.email) {
+    console.log(`[engine] Saltando Email1 para ${lead.business_name}: Sin dirección de email.`);
+    return;
+  }
 
-  const subject = `Ayuda rápida para subir reseñas en ${lead.business_name || "tu clínica"}`;
-  const text = `Hola ${lead.business_name || ""}, ...`;
-  const html = `<p>Hola ${lead.business_name || ""}, ...</p>`;
+  // 1. Definimos el contenido del correo (Día 1)
+  const subject = `Ayuda para las reseñas de ${lead.business_name}`;
+  const text = `Hola ${lead.business_name}, te escribía por aquí también para...`;
+  const html = `<p>Hola ${lead.business_name},</p><p>Te escribía por aquí también para...</p>`;
 
+  // 2. Enviamos el correo vía SendGrid
   const { messageId } = await sendEmail({
     to: lead.email,
     subject,
@@ -195,11 +203,18 @@ async function sendEmail1(lead) {
   });
 
   const sentAt = isoNow();
+
+  // 3. Programamos el SIGUIENTE Email para el Día 2 (Hoy + 24 horas)
+  const nextDate = addHoursIso(sentAt, 24);
+
+  // 4. Actualizamos el objeto lead
   lead.email_status = "EMAIL1_SENT";
   lead.email_last_outbound_at = sentAt;
-  lead.email_next_send_at = addHoursIso(sentAt, 24);
+  lead.email_next_send_at = nextDate; // Esto dispara el Email 2 mañana
   lead.email1_id = messageId || "sent";
 
+  // 5. Guardamos en la Google Sheet
+  console.log(`[engine] Email1 enviado a ${lead.email}. Próximo Email (Día 2): ${nextDate}`);
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
 
@@ -330,12 +345,14 @@ async function sendMsg2(lead) {
   const sentAt = isoNow();
   lead.status = "MSG2_SENT";
   lead.last_outbound_at = sentAt;
-  lead.next_send_at = computeNextSendFrom(sentAt, 48, cfg);
+  
+  // CAMBIO AQUÍ: Usamos addHoursIso para asegurar el salto de 2 días exactos (Día 3 -> Día 5)
+  lead.next_send_at = addHoursIso(sentAt, 48); 
+  
   lead.msg2_sid = msg.sid;
 
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
-
 async function sendMsg3(lead) {
   const msg = await sendTemplate({
     toE164: lead.whatsapp_e164,

@@ -191,74 +191,108 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
   console.log(`[import] Intentando bajar dataset: ${datasetId}`);
 
   try {
-    // 1) Cargar teléfonos existentes
+    // 1) Cargar datos existentes para comparar
     const values = await readRange("Leads!A:Z");
     const header = values[0] || [];
     const rows = values.slice(1);
     const idxPhone = header.indexOf("whatsapp_e164");
-    const existing = new Set();
+    const idxEmail = header.indexOf("email");
+    const idxWebsite = header.indexOf("website");
+    
+    // Mapeo de teléfonos a su índice de fila para actualizaciones rápidas
+    const phoneMap = new Map(); 
     if (idxPhone >= 0) {
-      rows.forEach(r => { if (r[idxPhone]) existing.add(String(r[idxPhone]).trim()); });
+      rows.forEach((r, index) => {
+        if (r[idxPhone]) phoneMap.set(String(r[idxPhone]).trim(), index);
+      });
     }
 
-    // 2) Fetch a Apify con validación
+    // 2) Fetch a Apify
     const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
     const resp = await fetch(url);
     
     if (!resp.ok) {
       const errorText = await resp.text();
-      console.error("[import] Error en respuesta de Apify:", errorText);
       return res.status(resp.status).send(`Error de Apify: ${errorText}`);
     }
 
     const items = await resp.json();
+    if (!Array.isArray(items)) return res.status(500).send("Apify no devolvió una lista.");
 
-    // VALIDACIÓN CRÍTICA: ¿Es una lista?
-    if (!Array.isArray(items)) {
-      console.error("[import] Los datos recibidos no son una lista:", items);
-      return res.status(500).send("Apify no devolvió una lista de resultados.");
-    }
-
-    // 3) Mapear filas
+    // 3) Procesar Items
     const rowsToInsert = [];
+    let updatedCount = 0;
+    const hoy = new Date().toISOString().split('T')[0]; // Fecha para programar Día 1
+
     for (const x of items) {
       const e164 = toE164Spain(x.phone || "");
-      if (!e164 || existing.has(e164)) continue;
+      if (!e164) continue;
 
-      existing.add(e164);
+      // Extraer email (formato directo o enriquecido)
+      const foundEmail = x.email || (x.contactInfo && x.contactInfo.emails && x.contactInfo.emails[0]) || "";
+      const foundWeb = x.website || "";
+
+      // ¿YA EXISTE EL TELÉFONO?
+      if (phoneMap.has(e164)) {
+        const rowIndex = phoneMap.get(e164);
+        const currentRow = rows[rowIndex];
+        const rowNumber = rowIndex + 2; // +2 por encabezado y base 1
+
+        // Si existe pero NO tiene email, lo actualizamos (Enriquecimiento)
+        if (!currentRow[idxEmail] && foundEmail) {
+          console.log(`[import] Actualizando datos para lead existente: ${e164}`);
+          
+          // Actualizamos Web (Columna H = 8) y Email (Columna N = 14)
+          if (foundWeb) await updateCell("Leads", rowNumber, 8, foundWeb);
+          await updateCell("Leads", rowNumber, 14, foundEmail);
+          
+          // También reseteamos el estado de email para que entre en la campaña
+          await updateCell("Leads", rowNumber, 17, "EMAIL_NEW"); // Columna Q
+          await updateCell("Leads", rowNumber, 19, hoy);         // Columna S (email_next_send)
+          
+          updatedCount++;
+        }
+        continue; // No lo insertamos como nuevo
+      }
+
+      // SI ES NUEVO: Creamos la fila completa con el plan del Día 1
       const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
-
       rowsToInsert.push([
-        lead_id,               // A
-        x.title || "",         // B
-        x.city || "Getafe",    // C
-        e164,                  // D
-        x.reviewsCount ?? "",  // E
-        x.totalScore ?? "",    // F
+        lead_id,               // A: lead_id
+        x.title || "",         // B: business_name
+        x.city || "Getafe",    // C: zone
+        e164,                  // D: whatsapp_e164
+        x.reviewsCount ?? "",  // E: google_reviews
+        x.totalScore ?? "",    // F: google_rating
         x.url || "apify",      // G: source
-        x.website || "",       // H: website (URL REAL)
-        "NEW",                 // I: status
-        "", "", "", "",        // J-M
-        x.email || "",         // N: email
-        "", "",                // O-P
-        "EMAIL_NEW",           // Q: email_status
-        "", "", "", "", "", "" // R-W
+        foundWeb,              // H: website
+        "NEW",                 // I: status (WA)
+        "",                    // J: last_outbound_at
+        hoy,                   // K: next_send_at (WA DIA 1)
+        "", "", "",            // L-N: SIDs
+        foundEmail,            // O: email (Columna N en la hoja si A es 1)
+        "FALSE",               // P: stop_all
+        "",                    // Q: stop_reason
+        "EMAIL_NEW",           // R: email_status
+        "",                    // S: email_last_outbound_at
+        hoy,                   // T: email_next_send_at (EMAIL DIA 1)
+        "", "", "", ""         // U-X: email IDs / replies
       ]);
+      phoneMap.set(e164, -1); // Evitar duplicados en el mismo dataset
     }
 
-    // 4) Insertar
-    if (rowsToInsert.length === 0) return res.send("No hay leads nuevos para importar.");
-
+    // 4) Insertar Nuevos
     let imported = 0;
-    const CHUNK = 40;
-    for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
-      const chunk = rowsToInsert.slice(i, i + CHUNK);
-      await appendRows("Leads", chunk);
-      imported += chunk.length;
-      await new Promise(r => setTimeout(r, 1000));
+    if (rowsToInsert.length > 0) {
+      const CHUNK = 40;
+      for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
+        const chunk = rowsToInsert.slice(i, i + CHUNK);
+        await appendRows("Leads", chunk);
+        imported += chunk.length;
+      }
     }
 
-    res.send(`✅ Éxito: ${imported} leads nuevos importados con website.`);
+    res.send(`✅ Proceso completado: ${imported} nuevos leads y ${updatedCount} leads existentes actualizados con email.`);
 
   } catch (err) {
     console.error("[import] Error crítico:", err);
