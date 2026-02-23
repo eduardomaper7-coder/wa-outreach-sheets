@@ -51,29 +51,31 @@ function rowFromLeadObj(lead) {
     lead.whatsapp_e164 || "",         // D
     lead.google_reviews || "",        // E
     lead.google_rating || "",         // F
-    lead.source || "",                // G (Según tu log, source está antes)
-    lead.website || "",               // H (Según tu log, website está aquí)
+    lead.source || "",                // G
+    lead.website || "",               // H
     lead.status || "",                // I
     lead.last_outbound_at || "",      // J
     lead.next_send_at || "",          // K
     lead.msg1_sid || "",              // L
     lead.msg2_sid || "",              // M
-    lead.email || "",                 // N
-    lead.stop_all || "",              // O
-    lead.stop_reason || "",           // P
-    lead.email_status || "",          // Q
-    lead.email_last_outbound_at || "",// R
-    lead.email_next_send_at || "",    // S
-    lead.email1_id || "",             // T
-    lead.email2_id || "",             // U
-    lead.email3_id || "",             // V
-    lead.email_reply_at || "",        // W
+    lead.msg3_sid || "",              // N  <-- TE FALTABA ESTA
+    lead.email || "",                 // O  <-- AHORA EL EMAIL CAE EN LA "O"
+    lead.stop_all || "",              // P
+    lead.stop_reason || "",           // Q
+    lead.email_status || "",          // R
+    lead.email_last_outbound_at || "",// S
+    lead.email_next_send_at || "",    // T
+    lead.email1_id || "",             // U
+    lead.email2_id || "",             // V
+    lead.email3_id || "",             // W
+    lead.email_reply_at || "",        // X
   ];
 }
 
 async function upsertLeadByPhone(newLead) {
   const { rows } = await getLeadsTable();
   const hoy = isoNow();
+  console.log(`[DEBUG] Lead: ${newLead.business_name} | Email detectado: ${newLead.email}`);
 
   // Limpiamos el teléfono que viene de Apify para la comparación
   const newPhoneClean = String(newLead.whatsapp_e164 || "").replace(/\D/g, "");
