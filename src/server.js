@@ -189,7 +189,7 @@ app.get("/admin/scrape", async (req, res) => {
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;
 
-  // 1) cargar teléfonos ya existentes
+  // 1) cargar teléfonos ya existentes para evitar duplicados
   const values = await readRange("Leads!A:Z");
   const header = values[0] || [];
   const rows = values.slice(1);
@@ -203,60 +203,61 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
     }
   }
 
-  // 2) bajar dataset
+  // 2) bajar dataset de Apify
   const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
   const r = await fetch(url);
   const items = await r.json();
 
-  // 3) preparar filas SOLO si no existe el teléfono
+  // 3) preparar filas con el nuevo mapeo de columnas
   const rowsToInsert = [];
   for (const x of items) {
     const e164 = toE164Spain(x.phone || "");
     if (!e164) continue;
-    if (existing.has(e164)) continue; // <-- evita duplicados
+    if (existing.has(e164)) continue; 
 
     existing.add(e164);
 
     const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    
+    // ESTE ARRAY DEBE COINCIDIR EXACTAMENTE CON TUS COLUMNAS A:W
     rowsToInsert.push([
-      lead_id,
-      x.title || "",
-      x.city || "",
-      e164,
-      x.reviewsCount ?? "",
-      x.totalScore ?? "",
-      x.url || "apify",
-      "NEW",
-      "",
-      "",
-      "",
-      "",
-      "",
-      // --- NUEVO (N..W) - placeholders para que cuadre con A:Z (si tu sheet tiene estas columnas)
-      x.email || "",   // N: email (si viene)
-      "",              // O: stop_all
-      "",              // P: stop_reason
-      "EMAIL_NEW",     // Q: email_status
-      "",              // R: email_last_outbound_at
-      "",              // S: email_next_send_at
-      "",              // T: email1_id
-      "",              // U: email2_id
-      "",              // V: email3_id
-      "",              // W: email_reply_at
+      lead_id,              // A
+      x.title || "",        // B
+      x.city || "Getafe",   // C
+      e164,                 // D
+      x.reviewsCount ?? "", // E
+      x.totalScore ?? "",   // F
+      x.url || "apify",     // G: source (Link de Google Maps)
+      x.website || "",      // H: website (AQUÍ ESTÁ EL CAMBIO CLAVE)
+      "NEW",                // I: status
+      "",                   // J: last_outbound_at
+      "",                   // K: next_send_at
+      "",                   // L: msg1_sid
+      "",                   // M: msg2_sid
+      x.email || "",        // N: email
+      "",                   // O: stop_all
+      "",                   // P: stop_reason
+      "EMAIL_NEW",          // Q: email_status
+      "",                   // R: email_last_outbound_at
+      "",                   // S: email_next_send_at
+      "",                   // T: email1_id
+      "",                   // U: email2_id
+      "",                   // V: email3_id
+      "",                   // W: email_reply_at
     ]);
   }
 
-  // 4) batch + pausas
+  // 4) Subida por bloques para no saturar la API de Google
   let imported = 0;
   const CHUNK = 50;
   for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
     const chunk = rowsToInsert.slice(i, i + CHUNK);
     await appendRows("Leads", chunk);
     imported += chunk.length;
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(resolve => setTimeout(resolve, 800));
   }
 
-  res.send(`Imported ${imported} new leads (skipped duplicates)`);
+  res.send(`Importados ${imported} leads nuevos con Website (duplicados saltados)`);
 });
 
 app.get("/admin/force-send", async (req, res) => {
