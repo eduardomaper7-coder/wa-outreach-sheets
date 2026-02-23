@@ -112,26 +112,61 @@ app.get("/admin/scrape", async (req, res) => {
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;
 
-  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
-  const r = await fetch(url);
-  const items = await r.json();
+  // 1) cargar teléfonos ya existentes
+  const values = await readRange("Leads!A:M");
+  const header = values[0] || [];
+  const rows = values.slice(1);
+  const idxPhone = header.indexOf("whatsapp_e164");
 
-  let count = 0;
-  for (const x of items) {
-    const lead = {
-      business_name: x.title || "",
-      zone: x.city || "",
-      whatsapp_e164: toE164Spain(x.phone || ""),
-      google_reviews: x.reviewsCount ?? null,
-      google_rating: x.totalScore ?? null,
-      source: x.url || "apify",
-    };
-
-    if (lead.whatsapp_e164) {
-      await upsertLeadByPhone(lead);
-      count++;
+  const existing = new Set();
+  if (idxPhone >= 0) {
+    for (const r of rows) {
+      const p = String(r[idxPhone] || "").trim();
+      if (p) existing.add(p);
     }
   }
 
-  res.send(`Imported ${count} leads`);
+  // 2) bajar dataset
+  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${process.env.APIFY_TOKEN}`;
+  const r = await fetch(url);
+  const items = await r.json();
+
+  // 3) preparar filas SOLO si no existe el teléfono
+  const rowsToInsert = [];
+  for (const x of items) {
+    const e164 = toE164Spain(x.phone || "");
+    if (!e164) continue;
+    if (existing.has(e164)) continue; // <-- evita duplicados
+
+    existing.add(e164);
+
+    const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    rowsToInsert.push([
+      lead_id,
+      x.title || "",
+      x.city || "",
+      e164,
+      x.reviewsCount ?? "",
+      x.totalScore ?? "",
+      x.url || "apify",
+      "NEW",
+      "",
+      "",
+      "",
+      "",
+      "",
+    ]);
+  }
+
+  // 4) batch + pausas
+  let imported = 0;
+  const CHUNK = 50;
+  for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
+    const chunk = rowsToInsert.slice(i, i + CHUNK);
+    await appendRows("Leads", chunk);
+    imported += chunk.length;
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  res.send(`Imported ${imported} new leads (skipped duplicates)`);
 });
