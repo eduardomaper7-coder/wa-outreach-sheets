@@ -3,7 +3,8 @@ const twilio = require("twilio");
 const cfg = require("./config");
 const { startEngine } = require("./engine");
 const { readRange, updateRow, appendRow } = require("./sheets");
-
+const { toE164Spain } = require("./utils");
+const { upsertLeadByPhone } = require("./engine");
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
@@ -106,4 +107,31 @@ app.get("/admin/scrape", async (req, res) => {
   const { dailyScrape } = require("./engine");
   await dailyScrape();
   res.send("scrape ok");
+});
+
+app.get("/admin/import-apify/:datasetId", async (req, res) => {
+  const datasetId = req.params.datasetId;
+
+  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
+  const r = await fetch(url);
+  const items = await r.json();
+
+  let count = 0;
+  for (const x of items) {
+    const lead = {
+      business_name: x.title || "",
+      zone: x.city || "",
+      whatsapp_e164: toE164Spain(x.phone || ""),
+      google_reviews: x.reviewsCount ?? null,
+      google_rating: x.totalScore ?? null,
+      source: x.url || "apify",
+    };
+
+    if (lead.whatsapp_e164) {
+      await upsertLeadByPhone(lead);
+      count++;
+    }
+  }
+
+  res.send(`Imported ${count} leads`);
 });

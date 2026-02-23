@@ -226,40 +226,4 @@ function startEngine() {
 
 module.exports = { startEngine, dailyScrape, upsertLeadByPhone };
 
-const { toE164Spain } = require("./utils"); // <-- añade esta línea arriba si no la tienes
 
-app.get("/admin/import-apify/:datasetId", async (req, res) => {
-  const datasetId = req.params.datasetId;
-
-  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
-  const r = await fetch(url);
-
-  if (!r.ok) {
-    const txt = await r.text();
-    return res.status(400).send(`Apify dataset fetch error ${r.status}: ${txt}`);
-  }
-
-  const items = await r.json();
-
-  const { upsertLeadByPhone } = require("./engine");
-
-  let count = 0;
-
-  for (const x of items) {
-    const lead = {
-      business_name: x.title || "",
-      zone: x.city || "",
-      whatsapp_e164: toE164Spain(x.phone || ""),
-      google_reviews: x.reviewsCount ?? null,
-      google_rating: x.totalScore ?? null,
-      source: x.url || "apify",
-    };
-
-    if (lead.business_name && lead.whatsapp_e164) {
-      await upsertLeadByPhone(lead);
-      count++;
-    }
-  }
-
-  res.send(`Imported ${count} leads`);
-});
