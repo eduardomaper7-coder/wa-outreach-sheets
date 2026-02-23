@@ -395,7 +395,36 @@ async function processDueEmailFollowups() {
     }
   }
 }
+// --- ENRICH: extraer emails para leads existentes sin email
+const { scrapeEmailFromWebsite } = require("./emailExtractor");
 
+async function enrichExistingLeadsEmails() {
+  const { rows } = await getLeadsTable();
+
+  for (const lead of rows) {
+    if (
+      !lead.email &&
+      lead.website &&
+      String(lead.stop_all || "").toUpperCase() !== "TRUE"
+    ) {
+      console.log("[enrich] buscando email en", lead.website);
+
+      try {
+        const email = await scrapeEmailFromWebsite(lead.website);
+
+        if (email) {
+          lead.email = email;
+          await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
+          console.log("[enrich] encontrado:", email);
+        }
+      } catch (e) {
+        console.log("[enrich] error:", e.message);
+      }
+    }
+  }
+
+  console.log("[enrich] terminado");
+}
 // --- Scheduler
 function startEngine() {
   // Followups + pacing cada 5 min
@@ -424,4 +453,5 @@ module.exports = {
   processNewLeadsPaced,
   processDueFollowups,
   processDueEmailFollowups,
+  enrichExistingLeadsEmails,
 };

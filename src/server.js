@@ -5,6 +5,7 @@ const twilio = require("twilio");
 const multer = require("multer");
 const cfg = require("./config");
 const { startEngine } = require("./engine");
+const { enrichExistingLeadsEmails } = require("./engine"); // 👈 AQUI
 const { readRange, updateRow, appendRow, appendRows } = require("./sheets");
 const { toE164Spain } = require("./utils");
 
@@ -167,7 +168,7 @@ app.post("/webhooks/status", async (req, res) => {
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 startEngine();
-
+enrichExistingLeadsEmails().catch(console.error);
 app.listen(cfg.PORT, () => console.log(`Listening on ${cfg.PORT}`));
 
 app.get("/admin/scrape", async (req, res) => {
