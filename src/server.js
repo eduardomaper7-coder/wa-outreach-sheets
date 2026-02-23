@@ -186,20 +186,23 @@ app.get("/admin/scrape", async (req, res) => {
   res.send("scrape ok");
 });
 
-app.get("/admin/import-apify/:datasetId", async (req, res) => {
-  const datasetId = req.params.datasetId;
+app.get("/admin/import-dataset", async (req, res) => {
+  // Acepta el ID tanto de la URL como de la query (?datasetId=...)
+  const datasetId = req.query.datasetId || req.params.datasetId;
   console.log(`[import] Intentando bajar dataset: ${datasetId}`);
+
+  if (!datasetId) return res.status(400).send("Falta el ID del dataset");
 
   try {
     // 1) Cargar datos existentes para comparar
     const values = await readRange("Leads!A:Z");
     const header = values[0] || [];
     const rows = values.slice(1);
-    const idxPhone = header.indexOf("whatsapp_e164");
-    const idxEmail = header.indexOf("email");
-    const idxWebsite = header.indexOf("website");
     
-    // Mapeo de teléfonos a su índice de fila para actualizaciones rápidas
+    const idxPhone = header.indexOf("whatsapp_e164"); // Col D (index 3)
+    const idxEmail = header.indexOf("email");         // Col O (index 14)
+    
+    // Mapeo de teléfonos a su índice de fila
     const phoneMap = new Map(); 
     if (idxPhone >= 0) {
       rows.forEach((r, index) => {
@@ -222,40 +225,42 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
     // 3) Procesar Items
     const rowsToInsert = [];
     let updatedCount = 0;
-    const hoy = new Date().toISOString().split('T')[0]; // Fecha para programar Día 1
+    const hoy = new Date().toISOString(); 
 
     for (const x of items) {
       const e164 = toE164Spain(x.phone || "");
       if (!e164) continue;
 
-      // Extraer email (formato directo o enriquecido)
+      // Extraer email de los campos posibles de Apify
       const foundEmail = x.email || (x.contactInfo && x.contactInfo.emails && x.contactInfo.emails[0]) || "";
       const foundWeb = x.website || "";
 
-      // ¿YA EXISTE EL TELÉFONO?
+      // ¿YA EXISTE EL TELÉFONO EN LA HOJA?
       if (phoneMap.has(e164)) {
         const rowIndex = phoneMap.get(e164);
         const currentRow = rows[rowIndex];
-        const rowNumber = rowIndex + 2; // +2 por encabezado y base 1
+        const rowNumber = rowIndex + 2; 
 
-        // Si existe pero NO tiene email, lo actualizamos (Enriquecimiento)
+        // Si existe pero NO tiene email en la columna O (índice 14), lo actualizamos
         if (!currentRow[idxEmail] && foundEmail) {
-          console.log(`[import] Actualizando datos para lead existente: ${e164}`);
+          console.log(`[import] Enriqueciendo lead existente: ${e164} con email ${foundEmail}`);
           
-          // Actualizamos Web (Columna H = 8) y Email (Columna N = 14)
+          // Actualizamos Website (H = Col 8)
           if (foundWeb) await updateCell("Leads", rowNumber, 8, foundWeb);
-          await updateCell("Leads", rowNumber, 14, foundEmail);
           
-          // También reseteamos el estado de email para que entre en la campaña
-          await updateCell("Leads", rowNumber, 17, "EMAIL_NEW"); // Columna Q
-          await updateCell("Leads", rowNumber, 19, hoy);         // Columna S (email_next_send)
+          // Actualizamos Email (O = Col 15)
+          await updateCell("Leads", rowNumber, 15, foundEmail);
+          
+          // Actualizamos Estados de Email (R = Col 18 y T = Col 20)
+          await updateCell("Leads", rowNumber, 18, "EMAIL_NEW"); 
+          await updateCell("Leads", rowNumber, 20, hoy); 
           
           updatedCount++;
         }
-        continue; // No lo insertamos como nuevo
+        continue; 
       }
 
-      // SI ES NUEVO: Creamos la fila completa con el plan del Día 1
+      // SI ES UN LEAD NUEVO: Creamos la fila respetando el orden exacto A:X
       const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
       rowsToInsert.push([
         lead_id,               // A: lead_id
@@ -268,20 +273,22 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
         foundWeb,              // H: website
         "NEW",                 // I: status (WA)
         "",                    // J: last_outbound_at
-        hoy,                   // K: next_send_at (WA DIA 1)
-        "", "", "",            // L-N: SIDs
-        foundEmail,            // O: email (Columna N en la hoja si A es 1)
+        hoy,                   // K: next_send_at (WA D0)
+        "",                    // L: msg1_sid
+        "",                    // M: msg2_sid
+        "",                    // N: msg3_sid (Hueco necesario)
+        foundEmail,            // O: email (COLUMNA CLAVE)
         "FALSE",               // P: stop_all
         "",                    // Q: stop_reason
         "EMAIL_NEW",           // R: email_status
         "",                    // S: email_last_outbound_at
-        hoy,                   // T: email_next_send_at (EMAIL DIA 1)
-        "", "", "", ""         // U-X: email IDs / replies
+        hoy,                   // T: email_next_send_at (EMAIL D0)
+        "", "", "", ""         // U-X: Ids y Replies
       ]);
-      phoneMap.set(e164, -1); // Evitar duplicados en el mismo dataset
+      phoneMap.set(e164, -1); 
     }
 
-    // 4) Insertar Nuevos
+    // 4) Insertar los nuevos leads en bloques
     let imported = 0;
     if (rowsToInsert.length > 0) {
       const CHUNK = 40;
@@ -292,10 +299,10 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
       }
     }
 
-    res.send(`✅ Proceso completado: ${imported} nuevos leads y ${updatedCount} leads existentes actualizados con email.`);
+    res.send(`✅ Importación terminada: ${imported} nuevos y ${updatedCount} enriquecidos con email.`);
 
   } catch (err) {
-    console.error("[import] Error crítico:", err);
+    console.error("[import] Error:", err);
     res.status(500).send(`Error: ${err.message}`);
   }
 });

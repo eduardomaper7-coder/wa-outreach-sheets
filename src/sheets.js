@@ -61,3 +61,8 @@ async function updateRow(sheetName, rowNumber1Based, rowValues) {
 }
 
 module.exports = { readRange, updateRow, appendRow, appendRows };
+
+async function updateCell(sheetName, rowNumber, colNumber, value) {
+  const columnLetter = String.fromCharCode(64 + colNumber);
+  await updateRow(`${sheetName}!${columnLetter}${rowNumber}:${columnLetter}${rowNumber}`, rowNumber, [value]);
+}
