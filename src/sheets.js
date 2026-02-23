@@ -38,13 +38,13 @@ async function appendRow(sheetName, rowValues) {
 }
 
 async function appendRows(sheetName, rows) {
-  // rows = [ [col1, col2, ...], [..], ... ]
   if (!rows || rows.length === 0) return;
 
+  const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.append({
-    spreadsheetId: cfg.GSHEET_ID,
-    range: `${sheetName}!A1`,
-    valueInputOption: "USER_ENTERED",
+    spreadsheetId: cfg.SHEETS_SPREADSHEET_ID,
+    range: `${sheetName}!A:Z`,
+    valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: rows },
   });

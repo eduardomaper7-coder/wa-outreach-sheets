@@ -127,7 +127,7 @@ app.get("/admin/import-apify/:datasetId", async (req, res) => {
   }
 
   // 2) bajar dataset
-  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${process.env.APIFY_TOKEN}`;
+  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
   const r = await fetch(url);
   const items = await r.json();
 
