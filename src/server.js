@@ -361,22 +361,21 @@ app.get("/admin/force-send", async (req, res) => {
 app.get("/admin/reply", async (req, res) => {
   const { to, msg } = req.query;
   
-  if (!to || !msg) {
-    return res.send("Error: Faltan parámetros. Uso: /admin/reply?to=346XXXXXX&msg=Tu mensaje");
-  }
+  if (!to || !msg) return res.send("Faltan parámetros: to y msg");
 
   try {
     const client = require("twilio")(cfg.TWILIO_ACCOUNT_SID, cfg.TWILIO_AUTH_TOKEN);
     
     await client.messages.create({
-      from: `whatsapp:${cfg.TWILIO_WHATSAPP_NUMBER}`,
+      // Pon aquí tu número de Twilio directamente para evitar el 'undefined'
+      from: `whatsapp:+34691830446`, // <--- CAMBIA ESTO POR TU NÚMERO DE TWILIO
       to: `whatsapp:${to}`,
       body: msg
     });
 
-    res.send(`✅ Mensaje enviado con éxito a ${to}.<br><br><b>Mensaje:</b> ${msg}`);
+    res.send(`✅ Mensaje enviado con éxito a ${to}`);
   } catch (e) {
-    console.error("Error al enviar respuesta manual:", e);
+    console.error("Error:", e.message);
     res.status(500).send("Error de Twilio: " + e.message);
   }
 });
