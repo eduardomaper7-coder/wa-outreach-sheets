@@ -51,7 +51,8 @@ async function findLeadRowByPhone(e164) {
 
 async function findLeadRowByEmail(email) {
   const values = await readRange("Leads!A:Z");
-  const header = values[0] || [];
+  const rawHeader = values[0] || [];
+  const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
   const rows = values.slice(1);
 
   const idxEmail = header.indexOf("email");
@@ -155,7 +156,8 @@ app.post("/webhooks/status", async (req, res) => {
   if (status === "failed" || status === "undelivered") {
     // busca por SID (msg1/msg2/msg3) leyendo sheet (simple, vale para pocos miles)
     const values = await readRange("Leads!A:Z");
-    const header = values[0] || [];
+    const rawHeader = values[0] || [];
+    const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
     const rows = values.slice(1);
 
     const idx1 = header.indexOf("msg1_sid");
@@ -369,7 +371,8 @@ app.get("/admin/force-send", async (req, res) => {
     console.log("[force-send] start");
 
     const values = await readRange("Leads!A:Z");
-    const header = values[0] || [];
+    const rawHeader = values[0] || [];
+    const header = rawHeader.map(h => String(h || "").trim().toLowerCase());
     const rows = values.slice(1);
 
     const idxStatus = header.indexOf("status");
