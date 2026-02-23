@@ -188,76 +188,82 @@ app.get("/admin/scrape", async (req, res) => {
 
 app.get("/admin/import-apify/:datasetId", async (req, res) => {
   const datasetId = req.params.datasetId;
+  console.log(`[import] Intentando bajar dataset: ${datasetId}`);
 
-  // 1) cargar teléfonos ya existentes para evitar duplicados
-  const values = await readRange("Leads!A:Z");
-  const header = values[0] || [];
-  const rows = values.slice(1);
-  const idxPhone = header.indexOf("whatsapp_e164");
-
-  const existing = new Set();
-  if (idxPhone >= 0) {
-    for (const r of rows) {
-      const p = String(r[idxPhone] || "").trim();
-      if (p) existing.add(p);
+  try {
+    // 1) Cargar teléfonos existentes
+    const values = await readRange("Leads!A:Z");
+    const header = values[0] || [];
+    const rows = values.slice(1);
+    const idxPhone = header.indexOf("whatsapp_e164");
+    const existing = new Set();
+    if (idxPhone >= 0) {
+      rows.forEach(r => { if (r[idxPhone]) existing.add(String(r[idxPhone]).trim()); });
     }
-  }
 
-  // 2) bajar dataset de Apify
-  const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
-  const r = await fetch(url);
-  const items = await r.json();
-
-  // 3) preparar filas con el nuevo mapeo de columnas
-  const rowsToInsert = [];
-  for (const x of items) {
-    const e164 = toE164Spain(x.phone || "");
-    if (!e164) continue;
-    if (existing.has(e164)) continue; 
-
-    existing.add(e164);
-
-    const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    // 2) Fetch a Apify con validación
+    const url = `https://api.apify.com/v2/datasets/${datasetId}/items?format=json&token=${cfg.APIFY_TOKEN}`;
+    const resp = await fetch(url);
     
-    // ESTE ARRAY DEBE COINCIDIR EXACTAMENTE CON TUS COLUMNAS A:W
-    rowsToInsert.push([
-      lead_id,              // A
-      x.title || "",        // B
-      x.city || "Getafe",   // C
-      e164,                 // D
-      x.reviewsCount ?? "", // E
-      x.totalScore ?? "",   // F
-      x.url || "apify",     // G: source (Link de Google Maps)
-      x.website || "",      // H: website (AQUÍ ESTÁ EL CAMBIO CLAVE)
-      "NEW",                // I: status
-      "",                   // J: last_outbound_at
-      "",                   // K: next_send_at
-      "",                   // L: msg1_sid
-      "",                   // M: msg2_sid
-      x.email || "",        // N: email
-      "",                   // O: stop_all
-      "",                   // P: stop_reason
-      "EMAIL_NEW",          // Q: email_status
-      "",                   // R: email_last_outbound_at
-      "",                   // S: email_next_send_at
-      "",                   // T: email1_id
-      "",                   // U: email2_id
-      "",                   // V: email3_id
-      "",                   // W: email_reply_at
-    ]);
-  }
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      console.error("[import] Error en respuesta de Apify:", errorText);
+      return res.status(resp.status).send(`Error de Apify: ${errorText}`);
+    }
 
-  // 4) Subida por bloques para no saturar la API de Google
-  let imported = 0;
-  const CHUNK = 50;
-  for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
-    const chunk = rowsToInsert.slice(i, i + CHUNK);
-    await appendRows("Leads", chunk);
-    imported += chunk.length;
-    await new Promise(resolve => setTimeout(resolve, 800));
-  }
+    const items = await resp.json();
 
-  res.send(`Importados ${imported} leads nuevos con Website (duplicados saltados)`);
+    // VALIDACIÓN CRÍTICA: ¿Es una lista?
+    if (!Array.isArray(items)) {
+      console.error("[import] Los datos recibidos no son una lista:", items);
+      return res.status(500).send("Apify no devolvió una lista de resultados.");
+    }
+
+    // 3) Mapear filas
+    const rowsToInsert = [];
+    for (const x of items) {
+      const e164 = toE164Spain(x.phone || "");
+      if (!e164 || existing.has(e164)) continue;
+
+      existing.add(e164);
+      const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+      rowsToInsert.push([
+        lead_id,               // A
+        x.title || "",         // B
+        x.city || "Getafe",    // C
+        e164,                  // D
+        x.reviewsCount ?? "",  // E
+        x.totalScore ?? "",    // F
+        x.url || "apify",      // G: source
+        x.website || "",       // H: website (URL REAL)
+        "NEW",                 // I: status
+        "", "", "", "",        // J-M
+        x.email || "",         // N: email
+        "", "",                // O-P
+        "EMAIL_NEW",           // Q: email_status
+        "", "", "", "", "", "" // R-W
+      ]);
+    }
+
+    // 4) Insertar
+    if (rowsToInsert.length === 0) return res.send("No hay leads nuevos para importar.");
+
+    let imported = 0;
+    const CHUNK = 40;
+    for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
+      const chunk = rowsToInsert.slice(i, i + CHUNK);
+      await appendRows("Leads", chunk);
+      imported += chunk.length;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    res.send(`✅ Éxito: ${imported} leads nuevos importados con website.`);
+
+  } catch (err) {
+    console.error("[import] Error crítico:", err);
+    res.status(500).send(`Error: ${err.message}`);
+  }
 });
 
 app.get("/admin/force-send", async (req, res) => {
