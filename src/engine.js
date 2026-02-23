@@ -127,28 +127,39 @@ async function processNewLeadsPaced() {
   const now = new Date();
   const { rows } = await getLeadsTable();
 
-  // cuenta cuántos MSG1 enviados hoy
   const msg1Today = rows.filter(r => r.msg1_sid && isTodayIso(r.last_outbound_at)).length;
 
   const shouldHaveSentByNow = expectedNewSendsByNow(now, cfg);
   const allowedToSendNow = Math.max(0, shouldHaveSentByNow - msg1Today);
 
+  const newCount = rows.filter(r => r.status === "NEW" && String(r.whatsapp_e164 || "").trim()).length;
+
+  console.log("[paced]",
+    "now=", now.toISOString(),
+    "msg1Today=", msg1Today,
+    "shouldHaveSentByNow=", shouldHaveSentByNow,
+    "allowedToSendNow=", allowedToSendNow,
+    "newLeads=", newCount
+  );
+
   if (allowedToSendNow <= 0) return;
 
   const newLeads = rows
     .filter(r => r.status === "NEW")
-    .slice(0, Math.min(allowedToSendNow, 3)); // cap por tick (suave). Ajusta si quieres.
+    .slice(0, Math.min(allowedToSendNow, 3));
+
+  console.log("[paced] sending", newLeads.length, "leads");
 
   for (const lead of newLeads) {
     try {
       await sendMsg1(lead);
     } catch (e) {
+      console.error("[paced] send error", lead.whatsapp_e164, e?.message || e);
       lead.status = "ERROR";
       await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
     }
   }
 }
-
 // --- 3) FOLLOWUPS (MSG2 / MSG3) cuando toque
 async function sendMsg2(lead) {
   const current = parseInt(lead.google_reviews || "0", 10);
@@ -218,14 +229,16 @@ function startEngine() {
 
     processNewLeadsPaced().catch(console.error);
     processDueFollowups().catch(console.error);
-  });
 
-  // Scrape diario a la hora que elijas (ej. 06:00)
+  }, { timezone: "Europe/Madrid" });
+
+  // Scrape diario
   cron.schedule(`0 ${cfg.APIFY_RUN_HOUR} * * *`, () => {
     console.log("[cron] daily scrape", new Date().toISOString());
 
     dailyScrape().catch(console.error);
-  });
+
+  }, { timezone: "Europe/Madrid" });
 }
 
 module.exports = {
