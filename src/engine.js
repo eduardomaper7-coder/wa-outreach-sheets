@@ -73,24 +73,31 @@ function rowFromLeadObj(lead) {
 
 async function upsertLeadByPhone(newLead) {
   const { rows } = await getLeadsTable();
-  // Buscamos si el teléfono ya existe en nuestra lista
-  const existing = rows.find(r => String(r.whatsapp_e164 || "").trim() === String(newLead.whatsapp_e164).trim());
   const hoy = isoNow();
 
-  // --- CASO 1: EL LEAD NO EXISTE (ES NUEVO) ---
+  // Limpiamos el teléfono que viene de Apify para la comparación
+  const newPhoneClean = String(newLead.whatsapp_e164 || "").replace(/\D/g, "");
+
+  // Buscamos si ya existe comparando solo los números
+  const existing = rows.find(r => {
+    const sheetPhoneClean = String(r.whatsapp_e164 || "").replace(/\D/g, "");
+    return sheetPhoneClean === newPhoneClean && sheetPhoneClean !== "";
+  });
+
+  // --- CASO 1: EL LEAD NO EXISTE (NUEVO) ---
   if (!existing) {
     const lead_id = `L${Date.now()}${Math.floor(Math.random() * 1000)}`;
     const lead = {
       lead_id,
       ...newLead,
-      // WhatsApp: Día 1
+      // WhatsApp: Empieza Hoy (Día 1)
       status: "NEW",
       last_outbound_at: "",
       next_send_at: hoy, 
       msg1_sid: "",
       msg2_sid: "",
       msg3_sid: "",
-      // Email: Día 1
+      // Email: Empieza Hoy (Día 1)
       stop_all: "FALSE",
       stop_reason: "",
       email_status: "EMAIL_NEW",
@@ -107,17 +114,18 @@ async function upsertLeadByPhone(newLead) {
     return { action: "insert" };
   }
 
-  // --- CASO 2: EL LEAD YA EXISTE (ENRIQUECIMIENTO) ---
+  // --- CASO 2: EL LEAD YA EXISTE (MATCH POR TELÉFONO) ---
   
-  // Detectamos si antes NO tenía email y AHORA sí nos llega uno de Apify
-  // Esto es lo que evita el "No hay leads nuevos" y rellena los huecos.
-  const hadNoEmail = !existing.email || existing.email.trim() === "";
-  const hasNewEmail = newLead.email && newLead.email.trim() !== "";
-  const shouldActivateEmail = hadNoEmail && hasNewEmail;
+  // Verificamos si podemos añadir un email que antes no estaba
+  const sheetEmail = String(existing.email || "").trim();
+  const newEmail = String(newLead.email || "").trim();
+  
+  // Se activa si el de la hoja está vacío y el de Apify trae un email válido
+  const shouldUpdateEmail = sheetEmail.length < 5 && newEmail.includes("@");
 
   const merged = {
     ...existing,
-    // Actualizamos datos básicos si vienen del nuevo scrapeo
+    // Actualizamos datos informativos
     business_name: newLead.business_name || existing.business_name,
     zone: newLead.zone || existing.zone,
     google_reviews: newLead.google_reviews ?? existing.google_reviews,
@@ -125,20 +133,22 @@ async function upsertLeadByPhone(newLead) {
     website: newLead.website || existing.website,
     source: newLead.source || existing.source,
     
-    // Si llega un email nuevo, lo guardamos
-    email: newLead.email || existing.email,
+    // Si hay email nuevo, lo ponemos. Si no, dejamos el que había.
+    email: shouldUpdateEmail ? newEmail : existing.email,
 
-    // SI ACTIVAMOS EMAIL: Ponemos estado NEW y fecha de hoy para que el cron lo envíe
-    email_status: shouldActivateEmail ? "EMAIL_NEW" : (existing.email_status || "EMAIL_NEW"),
-    email_next_send_at: shouldActivateEmail ? hoy : (existing.email_next_send_at || ""),
+    // Si actualizamos email, ponemos estado EMAIL_NEW y fecha de HOY
+    email_status: shouldUpdateEmail ? "EMAIL_NEW" : (existing.email_status || "EMAIL_NEW"),
+    email_next_send_at: shouldUpdateEmail ? hoy : (existing.email_next_send_at || ""),
     
-    // No tocamos el status de WhatsApp si ya estaba en marcha (a menos que fuera NEW)
+    // Mantenemos estado de WhatsApp
     status: existing.status || "NEW",
     stop_all: existing.stop_all || "FALSE"
   };
 
-  console.log(`[engine] Actualizando lead existente${shouldActivateEmail ? " con NUEVO EMAIL" : ""}: ${merged.business_name}`);
+  // Solo hacemos el update en la hoja si realmente cambió algo (email o datos)
+  console.log(`[engine] Actualizando lead: ${merged.business_name} ${shouldUpdateEmail ? "(CON EMAIL NUEVO)" : ""}`);
   await updateRow("Leads", existing.__rowNumber, rowFromLeadObj(merged));
+  
   return { action: "update" };
 }
 
@@ -353,6 +363,7 @@ async function sendMsg2(lead) {
 
   await updateRow("Leads", lead.__rowNumber, rowFromLeadObj(lead));
 }
+
 async function sendMsg3(lead) {
   const msg = await sendTemplate({
     toE164: lead.whatsapp_e164,
